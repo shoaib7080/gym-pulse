@@ -1,0 +1,39 @@
+{
+  "name": "api",
+  "version": "0.0.1",
+  "private": true,
+  "scripts": {
+    "dev": "nest start --watch",
+    "build": "nest build",
+    "start": "node dist/main",
+    "typecheck": "tsc --noEmit",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "drizzle-kit migrate",
+    "db:reset": "node reset-db.cjs && drizzle-kit migrate",
+    "db:studio": "drizzle-kit studio",
+    "seed:platform-admin": "node seed-platform-admin.cjs",
+    "test": "node test-e2e-flow.cjs"
+  },
+  "dependencies": {
+    "@gympulse/shared": "workspace:*",
+    "@nestjs/common": "^12.1.3",
+    "@nestjs/config": "^12.0.1",
+    "@nestjs/core": "^12.1.3",
+    "@nestjs/platform-express": "^12.1.3",
+    "better-auth": "^1.7.11",
+    "drizzle-orm": "^0.45.4",
+    "pg": "^8.23.1",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.2"
+  },
+  "devDependencies": {
+    "@nestjs/cli": "^12.0.8",
+    "@nestjs/schematics": "^12.0.7",
+    "@types/express": "^5.0.6",
+    "@types/node": "^22.20.5",
+    "@types/pg": "^8.23.1",
+    "dotenv": "^18.0.8",
+    "drizzle-kit": "^0.31.11",
+    "typescript": "^6.0.3"
+  }
+}

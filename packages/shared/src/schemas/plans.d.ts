@@ -1,0 +1,127 @@
+import { z } from 'zod';
+export declare const createPlanSchema: z.ZodObject<{
+    title: z.ZodString;
+    durationUnit: z.ZodEnum<["day", "month"]>;
+    durationValue: z.ZodNumber;
+    priceMinor: z.ZodEffects<z.ZodBigInt, bigint, bigint>;
+    priceIncludesVat: z.ZodDefault<z.ZodBoolean>;
+    graceDays: z.ZodDefault<z.ZodNumber>;
+    branchAccess: z.ZodDefault<z.ZodEnum<["home_only", "all_branches"]>>;
+    accessSchedule: z.ZodNullable<z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodUnknown>>>;
+    isActive: z.ZodDefault<z.ZodBoolean>;
+}, "strip", z.ZodTypeAny, {
+    isActive: boolean;
+    title: string;
+    durationUnit: "day" | "month";
+    durationValue: number;
+    priceMinor: bigint;
+    priceIncludesVat: boolean;
+    graceDays: number;
+    branchAccess: "home_only" | "all_branches";
+    accessSchedule?: Record<string, unknown> | null | undefined;
+}, {
+    title: string;
+    durationUnit: "day" | "month";
+    durationValue: number;
+    priceMinor: bigint;
+    isActive?: boolean | undefined;
+    priceIncludesVat?: boolean | undefined;
+    graceDays?: number | undefined;
+    branchAccess?: "home_only" | "all_branches" | undefined;
+    accessSchedule?: Record<string, unknown> | null | undefined;
+}>;
+export type CreatePlanInput = z.infer<typeof createPlanSchema>;
+export declare const updatePlanSchema: z.ZodObject<{
+    title: z.ZodOptional<z.ZodString>;
+    durationUnit: z.ZodOptional<z.ZodEnum<["day", "month"]>>;
+    durationValue: z.ZodOptional<z.ZodNumber>;
+    priceMinor: z.ZodOptional<z.ZodEffects<z.ZodBigInt, bigint, bigint>>;
+    priceIncludesVat: z.ZodOptional<z.ZodDefault<z.ZodBoolean>>;
+    graceDays: z.ZodOptional<z.ZodDefault<z.ZodNumber>>;
+    branchAccess: z.ZodOptional<z.ZodDefault<z.ZodEnum<["home_only", "all_branches"]>>>;
+    accessSchedule: z.ZodOptional<z.ZodNullable<z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodUnknown>>>>;
+    isActive: z.ZodOptional<z.ZodDefault<z.ZodBoolean>>;
+}, "strip", z.ZodTypeAny, {
+    isActive?: boolean | undefined;
+    title?: string | undefined;
+    durationUnit?: "day" | "month" | undefined;
+    durationValue?: number | undefined;
+    priceMinor?: bigint | undefined;
+    priceIncludesVat?: boolean | undefined;
+    graceDays?: number | undefined;
+    branchAccess?: "home_only" | "all_branches" | undefined;
+    accessSchedule?: Record<string, unknown> | null | undefined;
+}, {
+    isActive?: boolean | undefined;
+    title?: string | undefined;
+    durationUnit?: "day" | "month" | undefined;
+    durationValue?: number | undefined;
+    priceMinor?: bigint | undefined;
+    priceIncludesVat?: boolean | undefined;
+    graceDays?: number | undefined;
+    branchAccess?: "home_only" | "all_branches" | undefined;
+    accessSchedule?: Record<string, unknown> | null | undefined;
+}>;
+export type UpdatePlanInput = z.infer<typeof updatePlanSchema>;
+export declare const freezePolicySchema: z.ZodEffects<z.ZodObject<{
+    planId: z.ZodNullable<z.ZodOptional<z.ZodString>>;
+    isEnabled: z.ZodDefault<z.ZodBoolean>;
+    maxOccurrences: z.ZodDefault<z.ZodNumber>;
+    minDays: z.ZodDefault<z.ZodNumber>;
+    maxTotalDays: z.ZodDefault<z.ZodNumber>;
+    noticeDays: z.ZodDefault<z.ZodNumber>;
+    proofMode: z.ZodDefault<z.ZodEnum<["none", "optional", "required"]>>;
+    requireReview: z.ZodDefault<z.ZodBoolean>;
+    cycleBasis: z.ZodDefault<z.ZodEnum<["membership_term", "anniversary_year"]>>;
+    allowRemainingBalance: z.ZodDefault<z.ZodBoolean>;
+    feeMinor: z.ZodDefault<z.ZodBigInt>;
+}, "strip", z.ZodTypeAny, {
+    isEnabled: boolean;
+    maxOccurrences: number;
+    minDays: number;
+    maxTotalDays: number;
+    noticeDays: number;
+    proofMode: "none" | "optional" | "required";
+    requireReview: boolean;
+    cycleBasis: "membership_term" | "anniversary_year";
+    allowRemainingBalance: boolean;
+    feeMinor: bigint;
+    planId?: string | null | undefined;
+}, {
+    planId?: string | null | undefined;
+    isEnabled?: boolean | undefined;
+    maxOccurrences?: number | undefined;
+    minDays?: number | undefined;
+    maxTotalDays?: number | undefined;
+    noticeDays?: number | undefined;
+    proofMode?: "none" | "optional" | "required" | undefined;
+    requireReview?: boolean | undefined;
+    cycleBasis?: "membership_term" | "anniversary_year" | undefined;
+    allowRemainingBalance?: boolean | undefined;
+    feeMinor?: bigint | undefined;
+}>, {
+    isEnabled: boolean;
+    maxOccurrences: number;
+    minDays: number;
+    maxTotalDays: number;
+    noticeDays: number;
+    proofMode: "none" | "optional" | "required";
+    requireReview: boolean;
+    cycleBasis: "membership_term" | "anniversary_year";
+    allowRemainingBalance: boolean;
+    feeMinor: bigint;
+    planId?: string | null | undefined;
+}, {
+    planId?: string | null | undefined;
+    isEnabled?: boolean | undefined;
+    maxOccurrences?: number | undefined;
+    minDays?: number | undefined;
+    maxTotalDays?: number | undefined;
+    noticeDays?: number | undefined;
+    proofMode?: "none" | "optional" | "required" | undefined;
+    requireReview?: boolean | undefined;
+    cycleBasis?: "membership_term" | "anniversary_year" | undefined;
+    allowRemainingBalance?: boolean | undefined;
+    feeMinor?: bigint | undefined;
+}>;
+export type FreezePolicyInput = z.infer<typeof freezePolicySchema>;

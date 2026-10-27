@@ -1,0 +1,9 @@
+packages:
+  - 'apps/*'
+  - 'packages/*'
+
+# Allow the esbuild install script (used by tsup, vite and drizzle-kit).
+onlyBuiltDependencies: # pnpm 10
+  - esbuild
+allowBuilds: # pnpm 11 and newer
+  esbuild: true

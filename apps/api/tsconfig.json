@@ -1,0 +1,19 @@
+{
+  "compilerOptions": {
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "target": "ES2021",
+    "outDir": "./dist",
+    "rootDir": "./src",
+    "experimentalDecorators": true,
+    "emitDecoratorMetadata": true,
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "strict": true,
+    "strictPropertyInitialization": false,
+    "skipLibCheck": true,
+    "sourceMap": true,
+    "forceConsistentCasingInFileNames": true
+  },
+  "include": ["src"]
+}

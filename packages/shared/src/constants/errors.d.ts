@@ -1,0 +1,43 @@
+export declare const ERROR_CODES: {
+    readonly UNAUTHENTICATED: "UNAUTHENTICATED";
+    readonly FORBIDDEN: "FORBIDDEN";
+    readonly TENANT_MISMATCH: "TENANT_MISMATCH";
+    readonly VALIDATION_FAILED: "VALIDATION_FAILED";
+    readonly IDEMPOTENCY_CONFLICT: "IDEMPOTENCY_CONFLICT";
+    readonly MFA_REQUIRED: "MFA_REQUIRED";
+    readonly INVALID_CREDENTIALS: "INVALID_CREDENTIALS";
+    readonly TOKEN_EXPIRED: "TOKEN_EXPIRED";
+    readonly TOKEN_REPLAYED: "TOKEN_REPLAYED";
+    readonly INVALID_TOKEN: "INVALID_TOKEN";
+    readonly MEMBERSHIP_NOT_ELIGIBLE: "MEMBERSHIP_NOT_ELIGIBLE";
+    readonly BALANCE_OUTSTANDING: "BALANCE_OUTSTANDING";
+    readonly FREEZE_NOT_ENABLED: "FREEZE_NOT_ENABLED";
+    readonly FREEZE_NOTICE_TOO_SHORT: "FREEZE_NOTICE_TOO_SHORT";
+    readonly FREEZE_TOO_SHORT: "FREEZE_TOO_SHORT";
+    readonly FREEZE_QUOTA_EXCEEDED: "FREEZE_QUOTA_EXCEEDED";
+    readonly FREEZE_OUTSIDE_MEMBERSHIP: "FREEZE_OUTSIDE_MEMBERSHIP";
+    readonly FREEZE_OVERLAP: "FREEZE_OVERLAP";
+    readonly PROOF_REQUIRED: "PROOF_REQUIRED";
+    readonly SHIFT_NOT_OPEN: "SHIFT_NOT_OPEN";
+    readonly SHIFT_ALREADY_OPEN: "SHIFT_ALREADY_OPEN";
+    readonly SHIFT_VARIANCE_EXCEEDED: "SHIFT_VARIANCE_EXCEEDED";
+    readonly PAYMENT_ALREADY_PROCESSED: "PAYMENT_ALREADY_PROCESSED";
+    readonly PAYMENT_ACCOUNT_NOT_READY: "PAYMENT_ACCOUNT_NOT_READY";
+    readonly SUBSCRIPTION_RESTRICTED: "SUBSCRIPTION_RESTRICTED";
+    readonly RESOURCE_NOT_FOUND: "RESOURCE_NOT_FOUND";
+    readonly CONFLICT: "CONFLICT";
+    readonly INTERNAL_ERROR: "INTERNAL_ERROR";
+};
+export type ErrorCode = (typeof ERROR_CODES)[keyof typeof ERROR_CODES];
+export interface ProblemDetails {
+    type: string;
+    title: string;
+    status: number;
+    detail: string;
+    instance?: string;
+    code: ErrorCode;
+    invalidParams?: Array<{
+        name: string;
+        reason: string;
+    }>;
+}
