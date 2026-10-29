@@ -52,11 +52,17 @@ export const createBranchSchema = z.object({
 
 export type CreateBranchInput = z.infer<typeof createBranchSchema>;
 
-export const assignStaffSchema = z.object({
-  userId: z.string().min(1),
-  role: z.enum(STAFF_ROLES),
-  branchScope: z.enum([BRANCH_SCOPES.ALL, BRANCH_SCOPES.SELECTED]).default(BRANCH_SCOPES.ALL),
-  branchIds: z.array(z.string().uuid()).default([]),
-});
+export const assignStaffSchema = z
+  .object({
+    userId: z.string().optional(),
+    email: z.string().email().optional(),
+    role: z.enum(STAFF_ROLES),
+    branchScope: z.enum([BRANCH_SCOPES.ALL, BRANCH_SCOPES.SELECTED]).default(BRANCH_SCOPES.ALL),
+    branchIds: z.array(z.string().uuid()).default([]),
+  })
+  .refine((data) => !!(data.userId || data.email), {
+    message: 'Either userId or email is required',
+    path: ['userId'],
+  });
 
 export type AssignStaffInput = z.infer<typeof assignStaffSchema>;

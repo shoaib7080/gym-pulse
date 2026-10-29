@@ -488,6 +488,17 @@ export const shifts = pgTable('shifts', {
   openingFloatMinor: bigint('opening_float_minor', { mode: 'number' }).notNull().default(0),
   currency: char('currency', { length: 3 }).notNull().default('AED'),
   closedAt: timestamp('closed_at', { withTimezone: true }),
+  cashSalesMinor: bigint('cash_sales_minor', { mode: 'number' }).notNull().default(0),
+  countedCashMinor: bigint('counted_cash_minor', { mode: 'number' }),
+  expectedCashMinor: bigint('expected_cash_minor', { mode: 'number' }),
+  varianceMinor: bigint('variance_minor', { mode: 'number' }),
+  status: text('status')
+    .notNull()
+    .default('open')
+    .$type<'open' | 'closed' | 'variance_pending' | 'approved'>(),
+  approvedBy: uuid('approved_by').references(() => users.id, { onDelete: 'set null' }),
+  approvedAt: timestamp('approved_at', { withTimezone: true }),
+  approvalNotes: text('approval_notes'),
 });
 
 export const payments = pgTable(
@@ -586,7 +597,9 @@ export const checkIns = pgTable('check_ins', {
   membershipId: uuid('membership_id').references(() => memberships.id, { onDelete: 'set null' }),
   result: text('result').notNull().$type<'allowed' | 'denied' | 'override_allowed'>(),
   denyReason: text('deny_reason'),
-  method: text('method').notNull().$type<'qr' | 'desk_search' | 'manual' | 'turnstile'>(),
+  method: text('method')
+    .notNull()
+    .$type<'qr' | 'desk_search' | 'manual' | 'turnstile' | 'self_tap_temporary'>(),
   deviceId: text('device_id'),
   verifiedBy: uuid('verified_by').references(() => users.id, { onDelete: 'set null' }),
   overrideReason: text('override_reason'),
@@ -615,3 +628,123 @@ export const auditLogs = pgTable('audit_logs', {
   rowHash: text('row_hash').notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });
+
+// ============================================================================
+// 7. Platform SaaS Subscriptions, Invoicing & Outbox (Spec Section 5.6 & 5.8)
+// ============================================================================
+
+export const saasPlans = pgTable('saas_plans', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  code: text('code').notNull().unique(),
+  name: text('name').notNull(),
+  billingInterval: text('billing_interval').notNull().$type<'month' | 'year'>(),
+  priceMinor: bigint('price_minor', { mode: 'number' }).notNull().default(0),
+  currency: char('currency', { length: 3 }).notNull().default('AED'),
+  limits: jsonb('limits').notNull().default({}), // e.g. { maxBranches: 2, maxMembers: 500, maxStaff: 10 }
+  isActive: boolean('is_active').notNull().default(true),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const gymSubscriptions = pgTable(
+  'gym_subscriptions',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    gymId: uuid('gym_id')
+      .notNull()
+      .references(() => gyms.id, { onDelete: 'restrict' }),
+    saasPlanId: uuid('saas_plan_id')
+      .notNull()
+      .references(() => saasPlans.id, { onDelete: 'restrict' }),
+    status: text('status')
+      .notNull()
+      .default('trialing')
+      .$type<'trialing' | 'active' | 'past_due' | 'restricted' | 'suspended' | 'cancelled'>(),
+    periodStart: date('period_start').notNull(),
+    periodEnd: date('period_end').notNull(),
+    billingMethod: text('billing_method')
+      .notNull()
+      .default('bank_transfer')
+      .$type<'bank_transfer' | 'payment_link' | 'card_on_file'>(),
+    providerCustomerId: text('provider_customer_id'),
+    providerPaymentMethodId: text('provider_payment_method_id'),
+    cancelAt: date('cancel_at'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index('gym_subscriptions_gym_idx').on(table.gymId),
+  ],
+);
+
+export const platformInvoiceCounters = pgTable('platform_invoice_counters', {
+  series: text('series').primaryKey(),
+  nextNumber: bigint('next_number', { mode: 'number' }).notNull().default(1),
+});
+
+export const platformInvoices = pgTable(
+  'platform_invoices',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    gymId: uuid('gym_id')
+      .notNull()
+      .references(() => gyms.id, { onDelete: 'restrict' }),
+    subscriptionId: uuid('subscription_id')
+      .notNull()
+      .references(() => gymSubscriptions.id, { onDelete: 'restrict' }),
+    docType: text('doc_type').notNull().$type<'tax_invoice' | 'credit_note'>(),
+    series: text('series').notNull(),
+    number: bigint('number', { mode: 'number' }).notNull(),
+    invoiceNumber: text('invoice_number').notNull(),
+    issuedOn: date('issued_on').notNull(),
+    dueOn: date('due_on').notNull(),
+    supplier: jsonb('supplier').notNull(),
+    buyer: jsonb('buyer').notNull(),
+    lines: jsonb('lines').notNull().default([]),
+    totals: jsonb('totals').notNull().default({}),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex('platform_invoices_series_num_uq').on(table.series, table.number),
+  ],
+);
+
+export const platformInvoicePayments = pgTable('platform_invoice_payments', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  invoiceId: uuid('invoice_id')
+    .notNull()
+    .references(() => platformInvoices.id, { onDelete: 'restrict' }),
+  method: text('method').notNull().$type<'bank_transfer' | 'card' | 'payment_link'>(),
+  amountMinor: bigint('amount_minor', { mode: 'number' }).notNull(),
+  reference: text('reference'),
+  receivedOn: date('received_on').notNull(),
+  recordedBy: uuid('recorded_by').references(() => users.id, { onDelete: 'set null' }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const notificationOutbox = pgTable(
+  'notification_outbox',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    gymId: uuid('gym_id')
+      .notNull()
+      .references(() => gyms.id, { onDelete: 'restrict' }),
+    memberId: uuid('member_id').references(() => members.id, { onDelete: 'set null' }),
+    channel: text('channel').notNull().$type<'push' | 'whatsapp' | 'sms' | 'email'>(),
+    template: text('template').notNull(),
+    payload: jsonb('payload').notNull().default({}),
+    dedupeKey: text('dedupe_key').notNull().unique(),
+    status: text('status')
+      .notNull()
+      .default('pending')
+      .$type<'pending' | 'sent' | 'failed' | 'dead'>(),
+    attempts: integer('attempts').notNull().default(0),
+    nextAttemptAt: timestamp('next_attempt_at', { withTimezone: true }).notNull().defaultNow(),
+    sentAt: timestamp('sent_at', { withTimezone: true }),
+    errorMessage: text('error_message'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index('notification_outbox_pending_idx').on(table.status, table.nextAttemptAt),
+  ],
+);

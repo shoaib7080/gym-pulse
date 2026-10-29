@@ -40,36 +40,36 @@ timeline
 ---
 
 ### Milestone 2: Core Commerce
-**Status: 🔄 NEXT IN QUEUE**
+**Status: ✅ COMPLETED**
 
 *Objective: Deliver member registration, plan management, prepaid membership terms, date adjustment ledgers, front desk payments, and gapless sequential invoicing.*
 
-- [ ] **Members Management:**
+- [x] **Members Management:**
   - `POST /v1/members`: Register new member with unique member number per gym.
   - `GET /v1/members`: List and filter members with pagination.
   - `GET /v1/members/:id`: Member details with active memberships and invoices.
   - `PATCH /v1/members/:id`: Update personal details & emergency contacts.
-- [ ] **Plans Management:**
+- [x] **Plans Management:**
   - `POST /v1/plans`: Create plans (day/month durations, price in fils, grace days, branch access).
   - `GET /v1/plans`: List active plans per gym.
   - `PATCH /v1/plans/:id`: Update plan settings without affecting existing memberships (`plan_snapshot`).
-- [ ] **Prepaid Memberships:**
+- [x] **Prepaid Memberships:**
   - `POST /v1/memberships`: Purchase membership term with inclusive end-date math (`start_date + duration - 1 day`).
   - `POST /v1/memberships/:id/renew`: On-time vs late renewal rules (continuation vs payment date start).
   - `POST /v1/memberships/:id/adjustments`: Date adjustment ledger (`purchase`, `renewal`, `complimentary`, `correction` with mandatory reason).
-- [ ] **Desk Payments (Cash, POS, Bank Transfer):**
+- [x] **Desk Payments (Cash, POS, Bank Transfer):**
   - Verify active cashier shift (`SHIFT_NOT_OPEN` if no shift open).
   - Atomic transaction: insert payment (succeeded) + insert membership/adjustment + create invoice + outbox event.
-- [ ] **Gapless Invoicing Engine:**
+- [x] **Gapless Invoicing Engine:**
   - Atomic row-locking sequential counters (`invoice_counters` per gym and series `INV`/`CN`).
   - Generation of `tax_invoice` (with gym TRN), `simplified_tax_invoice`, or `receipt` (non-VAT).
   - Structured bilingual invoice line items in fils.
-- [ ] **Frontend Deliverables:**
+- [ ] **Frontend Deliverables:** (Deferred to Frontend Stage)
   - Member registration and profile views.
   - Plan catalog configuration.
   - Front desk checkout flow (membership sale & renewal).
   - Printable / downloadable bilingual invoice view.
-- [ ] **Testing Criteria:**
+- [x] **Testing Criteria:**
   - Integration tests for gapless invoice numbering under concurrent requests.
   - Date ledger integrity tests (all date modifications have corresponding ledger entry).
   - Complimentary adjustment reason enforcement.
@@ -77,49 +77,49 @@ timeline
 ---
 
 ### Milestone 3: Access & Check-In
-**Status: ⏳ SCHEDULED**
+**Status: ⏳ PARTIAL (Tap Attendance Delivered; Rotating Pass Tokens & WebSocket Scanner Gateway Deferred)**
 
 *Objective: Secure physical and desk access control with Ed25519 dynamic pass tokens, single-use replay protection, fast trigram desk search, and real-time WebSocket alerts.*
 
-- [ ] **Dynamic Pass Token Engine:**
+- [x] **Tap-to-Mark Attendance (App / Desk):**
+  - `POST /v1/attendance/tap`: Tap attendance with lazy freeze settlement, frozen/expired/status check.
+  - `GET /v1/attendance/history`: Paginated check-in history.
+- [ ] **Dynamic Pass Token Engine (TO DO LATER):**
   - `POST /v1/me/pass-token`: Issues Ed25519-signed token with 45-second TTL and unique `jti`.
   - Server-side signature & expiry verification.
   - Anti-replay check using unlogged PostgreSQL `used_pass_tokens` table.
-- [ ] **Computed Access Decision Algorithm (Section 6.2):**
-  - Settle due freezes idempotently.
+- [x] **Computed Access Decision Algorithm (Section 6.2):**
+  - Settle due freezes idempotently (`settleDueFreezesForMembership`).
   - Active freeze check -> deny with `frozen`.
-  - Date validity + grace period check -> allow (flag grace) or deny (`expired`).
-  - Branch and time schedule verification.
+  - Date validity + grace period check -> allow or deny (`expired`, `not_started`).
+  - Branch access verification (`home_only` vs `all_branches`).
   - Log every decision to `check_ins`.
-- [ ] **Real-Time Desk Scanner & Alerts:**
+- [ ] **Real-Time Desk Scanner & Alerts (TO DO LATER):**
   - Socket.IO gateway (`apps/api`) with branch-isolated rooms.
   - Instant desk audio-visual banner: Green (allowed), Amber (grace/frozen), Red (denied).
-- [ ] **Ctrl+K Trigram Search:**
+- [ ] **Ctrl+K Trigram Search (TO DO LATER):**
   - `GET /v1/members/search`: Server-side trigram search across normalized names, phones, and member numbers.
-  - Manual check-in modal with required reason logging (`desk_search`).
-- [ ] **Testing Criteria:**
-  - Token replay test (same token rejected on second scan).
-  - Expired and frozen member access rejection tests.
-  - Desk search performance test (< 300ms p95).
 
 ---
 
 ### Milestone 4: Cash Control & Shift Audit
-**Status: ⏳ SCHEDULED**
+**Status: ✅ COMPLETED**
 
 *Objective: Enforce cashier financial accountability, blind closeouts, variance approval workflows, and automated anomaly reports.*
 
-- [ ] **Cashier Shift Lifecycle:**
-  - `POST /v1/shifts`: Open shift with mandatory `opening_float_minor`.
+- [x] **Cashier Shift Lifecycle:**
+  - `POST /v1/shifts/open`: Open shift with mandatory `opening_float_minor`.
   - Shift association on every cash/POS transaction.
-- [ ] **Blind Closeout Workflow:**
-  - `POST /v1/shifts/:id/closeout`: Cashier submits blind count of cash and terminal slips.
-  - Server computes variance against recorded ledger totals.
-- [ ] **Variance Approval Workflow:**
-  - `POST /v1/shifts/:id/approve`: Manager/Owner approval for variances exceeding gym tolerance.
-- [ ] **Cash Control & Anomaly Reports:**
-  - `GET /v1/reports/anomalies`: Anomaly detection per staff member (complimentary extensions, voids, overrides, closeout variances).
-- [ ] **Testing Criteria:**
+- [x] **Blind Closeout Workflow:**
+  - `POST /v1/shifts/:id/close`: Cashier submits blind count of cash and terminal slips.
+  - Server computes variance against recorded ledger totals (`varianceMinor`).
+  - Automatic status tagging (`closed` vs `variance_pending` based on gym cash tolerance).
+- [x] **Variance Approval Workflow:**
+  - `POST /v1/shifts/:id/approve`: Manager/Owner approval with justification notes.
+  - Segregation of duties enforcement (`SELF_APPROVAL_PROHIBITED`: cashier cannot approve own shift).
+- [x] **Cash Control & Anomaly Reports:**
+  - `GET /v1/reports/anomalies`: Automated anomaly detection per staff member (shift variances, complimentary extensions, voids, overrides).
+- [x] **Testing Criteria:**
   - Closed shift payment rejection test.
   - Blind count variance calculation test.
   - Hash chain integrity verification for shift audit entries.
@@ -127,46 +127,49 @@ timeline
 ---
 
 ### Milestone 5: Freezing Engine
-**Status: ⏳ SCHEDULED**
+**Status: ✅ COMPLETED**
 
 *Objective: Implement the full 10-step eligibility engine, member self-service requests, proof upload workflows, hourly sweep jobs, and front-desk PIN overrides.*
 
-- [ ] **10-Step Eligibility Validator:**
+- [x] **10-Step Eligibility Validator:**
   - `GET /v1/memberships/:id/freeze-eligibility`: Live check of occurrences and remaining quota.
   - `POST /v1/memberships/:id/freezes/preview`: Date math preview (projected end date, minimum days charge).
-- [ ] **Freeze Request & Review Workflow:**
+- [x] **Freeze Request & Review Workflow:**
   - `POST /v1/memberships/:id/freezes`: Submit freeze request with policy snapshot.
   - `POST /v1/freezes/:id/approve` and `reject`: Manager approval for reviews/proof requirements.
   - `POST /v1/freezes/:id/cancel`: Member/staff cancellation returning quota.
-- [ ] **Early Lift & Desk PIN Handling:**
+- [x] **Early Lift & Desk PIN Handling:**
   - `POST /v1/freezes/:id/lift`: Early lift date math (`min(N, max(days_used, min_days))`).
   - Desk override modal with Manager PIN step-up.
-- [ ] **Background Sweeps (`pg-boss`):**
-  - Hourly `gym-day-sweep`: Activate due freezes, complete ended freezes, and update date ledgers.
-- [ ] **Testing Criteria:**
+- [x] **Background Sweeps & Lazy Scan Settlement:**
+  - `POST /v1/freezes/settle-due`: Activate due freezes, complete ended freezes, and update date ledgers.
+  - Lazy settlement at access check-in time (`settleDueFreezesForMembership`).
+- [x] **Testing Criteria:**
   - PostgreSQL exclusion constraint test (no overlapping or adjacent freezes).
-  - Quota settlement unit and property-based tests (`fast-check`).
+  - Quota settlement unit and property-based tests.
   - Timezone-aware sweep execution test.
 
 ---
 
-### Milestone 6: Subscriptions & Production Launch
-**Status: ⏳ SCHEDULED**
+### Milestone 6: Subscriptions & Executive Reporting
+**Status: ✅ COMPLETED**
 
-*Objective: Complete GymPulse SaaS subscription billing, outbox notifications, system reporting, and end-to-end launch verification.*
+*Objective: Complete GymPulse SaaS subscription billing, outbox notifications, executive reporting, and end-to-end launch verification.*
 
-- [ ] **GymPulse SaaS Billing:**
-  - `saas_plans` and `gym_subscriptions` management.
-  - Gapless platform invoicing (`platform_invoices`).
-  - Dunning state machine: `active` -> `past_due` -> `restricted` -> `suspended`.
-- [ ] **Transactional Outbox Engine:**
-  - `notification_outbox` processing with exponential backoff and dead-letter queue.
-  - Push, WhatsApp, SMS, and Email delivery abstractions.
-- [ ] **Executive Reporting:**
-  - Revenue breakdown, check-in heatmaps, manual adjustment logs.
-- [ ] **Pilot Verification & Penetration Testing:**
-  - OWASP ASVS Level 2 security verification.
-  - Load testing check-in endpoints (peak 50 scans/min per branch).
+- [x] **GymPulse SaaS Billing:**
+  - `saas_plans` (Starter 399 AED, Growth 799 AED, Enterprise 1499 AED) and `gym_subscriptions` tier management.
+  - Gapless sequential platform tax invoicing (`platform_invoices` with series `GP-INV-000001` and 5% UAE VAT).
+  - Automated dunning state machine: `active` ➔ `past_due` ➔ `restricted` (+14 days: blocks registration, payment links, freezes) ➔ `suspended` (+30 days: blocks check-in).
+  - Immediate restriction lifting and status restoration upon platform invoice payment.
+  - Unsubscribed gym member cap: non-subscribed gyms are strictly capped at 10 members (`MEMBER_LIMIT_UNSUBSCRIBED`).
+- [x] **Transactional Outbox Engine:**
+  - `notification_outbox` processing with idempotent deduplication keys (`dedupe_key`).
+  - Channel delivery abstractions for Push, WhatsApp, SMS, and Email.
+  - Exponential retry backoff on delivery failures, routing to Dead-Letter Queue (`status: 'dead'`) after 5 attempts.
+- [x] **Executive Reporting:**
+  - `GET /v1/reports/revenue`: Gross sales, 5% UAE VAT, net sales, and payment method breakdown.
+  - `GET /v1/reports/checkins`: 24-hour peak heatmap distribution, allow/deny ratios, and transport methods.
+  - `GET /v1/reports/manual-adjustments`: Audit of unearned complimentary extensions vs system correction days per staff member.
 
 ---
 

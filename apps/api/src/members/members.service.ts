@@ -17,12 +17,14 @@ import {
 } from '@gympulse/shared';
 import { AuditService } from '../common/audit/audit.service';
 import { scopeEntityToGym, scopeToGym } from '../common/tenant/tenant-scope.helper';
+import { SubscriptionsService } from '../subscriptions/subscriptions.service';
 
 @Injectable()
 export class MembersService {
   constructor(
     @Inject(DB) private readonly db: Database,
     private readonly auditService: AuditService,
+    private readonly subscriptionsService: SubscriptionsService,
   ) {}
 
   /**
@@ -32,8 +34,12 @@ export class MembersService {
    * 2. Auto-generated sequential member number per gym (e.g. MEM-0001)
    * 3. Tenant-scoped home branch validation
    * 4. Audit trail logging
+   * 5. SaaS subscription tier limits & unsubscribed cap (10 members)
    */
   async createMember(gymId: string, rawInput: unknown, actorUserId?: string) {
+    // Enforce SaaS plan tier and unsubscribed member cap
+    await this.subscriptionsService.checkMemberLimit(gymId);
+
     const parseResult = createMemberSchema.safeParse(rawInput);
     if (!parseResult.success) {
       throw new BadRequestException({

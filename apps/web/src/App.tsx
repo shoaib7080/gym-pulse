@@ -1,13 +1,13 @@
-import { useState, useEffect } from 'react';
-import { useQuery } from '@tanstack/react-query';
-import { healthResponseSchema, metaResponseSchema } from '@gympulse/shared';
-import { DashboardLayout } from './components/layout/DashboardLayout';
-import { BentoDashboardView } from './components/views/BentoDashboardView';
-import { OperationsView } from './components/views/OperationsView';
-import { ComplianceView } from './components/views/ComplianceView';
-import { StitchGalleryView } from './components/views/StitchGalleryView';
-import { applyThemeToDocument, DEFAULT_THEME } from './theme';
-import { CheckCircle2, AlertTriangle, Clock } from './components/ui/icons';
+import { useState, useEffect } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { healthResponseSchema, metaResponseSchema } from "@gympulse/shared";
+import { DashboardLayout } from "./components/layout/DashboardLayout";
+import { BentoDashboardView } from "./components/views/BentoDashboardView";
+import { OperationsView } from "./components/views/OperationsView";
+import { ComplianceView } from "./components/views/ComplianceView";
+import { StitchGalleryView } from "./components/views/StitchGalleryView";
+import { applyThemeToDocument, DEFAULT_THEME } from "./theme";
+import { CheckCircle2, AlertTriangle, Clock } from "./components/ui/icons";
 
 async function getJson(path: string): Promise<unknown> {
   const res = await fetch(path);
@@ -28,12 +28,16 @@ function StatusCard({ title, path, parse }: CardProps) {
     retry: false,
   });
 
-  const state = isPending ? 'Checking...' : error ? 'Offline / Inactive' : 'Operational (OK)';
+  const state = isPending
+    ? "Checking..."
+    : error
+      ? "Offline / Inactive"
+      : "Operational (OK)";
   const badgeColor = error
-    ? 'bg-error-container/20 text-error border-error/30'
+    ? "bg-error-container/20 text-error border-error/30"
     : isPending
-    ? 'bg-surface-container text-on-surface-variant border-outline-variant/30'
-    : 'bg-primary/15 text-primary border-primary/30';
+      ? "bg-surface-container text-on-surface-variant border-outline-variant/30"
+      : "bg-primary/15 text-primary border-primary/30";
 
   return (
     <div className="rounded-xl border border-outline-variant/30 bg-surface-container-low p-4 shadow-sm flex flex-col justify-between">
@@ -59,8 +63,8 @@ function StatusCard({ title, path, parse }: CardProps) {
 
         <p className="mt-2 text-xs text-on-surface-variant">
           {error
-            ? 'Endpoint unreachable or database connection pending.'
-            : 'Live telemetry verified with 100% Peppol & UAE tax rule schema conformance.'}
+            ? "Endpoint unreachable or database connection pending."
+            : "Live telemetry verified with 100% Peppol & UAE tax rule schema conformance."}
         </p>
       </div>
 
@@ -72,7 +76,7 @@ function StatusCard({ title, path, parse }: CardProps) {
 }
 
 export default function App() {
-  const [activeNav, setActiveNav] = useState('bento');
+  const [activeNav, setActiveNav] = useState("bento");
 
   // Initialize central theme on mount
   useEffect(() => {
@@ -82,7 +86,7 @@ export default function App() {
   return (
     <DashboardLayout activeNav={activeNav} onNavSelect={setActiveNav}>
       {/* Dynamic View Switcher */}
-      {activeNav === 'bento' && (
+      {activeNav === "bento" && (
         <>
           <BentoDashboardView />
           {/* Integrated Backend Health Diagnostics Strip */}
@@ -93,11 +97,16 @@ export default function App() {
                   Core Backend & Multi-Tenant Database Health
                 </h2>
                 <p className="text-xs text-on-surface-variant">
-                  NestJS modular monolith telemetry, PostgreSQL RLS backstop, and schema validation.
+                  NestJS modular monolith telemetry, PostgreSQL RLS backstop,
+                  and schema validation.
                 </p>
               </div>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <StatusCard title="API Metadata" path="/v1/meta" parse={(d) => metaResponseSchema.parse(d)} />
+                <StatusCard
+                  title="API Metadata"
+                  path="/v1/meta"
+                  parse={(d) => metaResponseSchema.parse(d)}
+                />
                 <StatusCard
                   title="PostgreSQL Health"
                   path="/v1/health"
@@ -109,19 +118,19 @@ export default function App() {
         </>
       )}
 
-      {activeNav === 'operations' && <OperationsView />}
+      {activeNav === "operations" && <OperationsView />}
 
-      {activeNav === 'telemetry' && <BentoDashboardView />}
+      {activeNav === "telemetry" && <BentoDashboardView />}
 
-      {activeNav === 'compliance' && <ComplianceView />}
+      {activeNav === "compliance" && <ComplianceView />}
 
-      {activeNav === 'equipment' && <BentoDashboardView />}
+      {activeNav === "equipment" && <BentoDashboardView />}
 
-      {activeNav === 'billing' && <ComplianceView />}
+      {activeNav === "billing" && <ComplianceView />}
 
-      {activeNav === 'gallery' && <StitchGalleryView />}
+      {activeNav === "gallery" && <StitchGalleryView />}
 
-      {activeNav === 'settings' && <ComplianceView />}
+      {activeNav === "settings" && <ComplianceView />}
     </DashboardLayout>
   );
 }

@@ -22,6 +22,15 @@ async function resetDatabase() {
     process.exit(1);
   }
 
+  let dbHost = 'unknown';
+  try {
+    const parsed = new URL(process.env.DATABASE_URL);
+    dbHost = parsed.host;
+  } catch {
+    dbHost = (process.env.DATABASE_URL.match(/@([^:/]+)/) || [])[1] || 'configured-host';
+  }
+
+  console.log(`📡 Target database host: ${dbHost} (password hidden)`);
   console.log('🔄 Resetting development database schema (dev data is disposable)...');
 
   const pool = new Pool({

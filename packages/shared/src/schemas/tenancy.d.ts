@@ -90,19 +90,34 @@ export declare const createBranchSchema: z.ZodObject<{
     isActive?: boolean | undefined;
 }>;
 export type CreateBranchInput = z.infer<typeof createBranchSchema>;
-export declare const assignStaffSchema: z.ZodObject<{
-    userId: z.ZodString;
+export declare const assignStaffSchema: z.ZodEffects<z.ZodObject<{
+    userId: z.ZodOptional<z.ZodString>;
+    email: z.ZodOptional<z.ZodString>;
     role: z.ZodEnum<["owner", "manager", "front_desk"]>;
     branchScope: z.ZodDefault<z.ZodEnum<["all", "selected"]>>;
     branchIds: z.ZodDefault<z.ZodArray<z.ZodString, "many">>;
 }, "strip", z.ZodTypeAny, {
-    userId: string;
     role: "owner" | "manager" | "front_desk";
     branchScope: "all" | "selected";
     branchIds: string[];
+    userId?: string | undefined;
+    email?: string | undefined;
 }, {
-    userId: string;
     role: "owner" | "manager" | "front_desk";
+    userId?: string | undefined;
+    email?: string | undefined;
+    branchScope?: "all" | "selected" | undefined;
+    branchIds?: string[] | undefined;
+}>, {
+    role: "owner" | "manager" | "front_desk";
+    branchScope: "all" | "selected";
+    branchIds: string[];
+    userId?: string | undefined;
+    email?: string | undefined;
+}, {
+    role: "owner" | "manager" | "front_desk";
+    userId?: string | undefined;
+    email?: string | undefined;
     branchScope?: "all" | "selected" | undefined;
     branchIds?: string[] | undefined;
 }>;

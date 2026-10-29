@@ -41,10 +41,16 @@ exports.createBranchSchema = zod_1.z.object({
         .default({}),
     isActive: zod_1.z.boolean().default(true),
 });
-exports.assignStaffSchema = zod_1.z.object({
-    userId: zod_1.z.string().uuid(),
+exports.assignStaffSchema = zod_1.z
+    .object({
+    userId: zod_1.z.string().optional(),
+    email: zod_1.z.string().email().optional(),
     role: zod_1.z.enum(roles_js_1.STAFF_ROLES),
     branchScope: zod_1.z.enum([roles_js_1.BRANCH_SCOPES.ALL, roles_js_1.BRANCH_SCOPES.SELECTED]).default(roles_js_1.BRANCH_SCOPES.ALL),
     branchIds: zod_1.z.array(zod_1.z.string().uuid()).default([]),
+})
+    .refine((data) => Boolean(data.userId || data.email), {
+    message: 'Either userId or email is required',
+    path: ['userId'],
 });
 //# sourceMappingURL=tenancy.js.map

@@ -80,6 +80,16 @@ function assert(condition, message, details = null) {
 }
 
 async function run() {
+  // Safety guard: refuse to run unless ALLOW_DESTRUCTIVE_TESTS=true and NODE_ENV is not production
+  if (process.env.NODE_ENV === 'production') {
+    console.error('❌ E2E test suite cannot run in production mode!');
+    process.exit(1);
+  }
+  if (process.env.ALLOW_DESTRUCTIVE_TESTS !== 'true') {
+    console.error('❌ Safety guard: ALLOW_DESTRUCTIVE_TESTS=true must be set to run e2e integration tests.');
+    process.exit(1);
+  }
+
   console.log('================================================================');
   console.log('🚀 GymPulse Phase 1 End-to-End Test Suite');
   console.log(`Target: ${API_BASE}`);
@@ -98,28 +108,16 @@ async function run() {
   let membershipId = '';
   let shiftId = '';
 
-  // 0. DB Readiness & Genesis Audit Chain Reset
-  console.log('--- Step 0: Verify DB Connection & Reset Genesis Audit Chain ---');
-  await pool.query(`TRUNCATE TABLE "audit_logs" RESTART IDENTITY;`);
-  await pool.query(`DELETE FROM "gym_payment_accounts";`);
-  await pool.query(`CREATE EXTENSION IF NOT EXISTS btree_gist;`);
-  await pool.query(`
-    DO $$
-    BEGIN
-      IF NOT EXISTS (
-        SELECT 1 FROM pg_constraint WHERE conname = 'no_overlapping_freezes'
-      ) THEN
-        ALTER TABLE membership_freezes
-        ADD CONSTRAINT no_overlapping_freezes
-        EXCLUDE USING gist (
-          membership_id WITH =,
-          daterange(start_date, (end_date + integer '1'), '[]') WITH &&
-        )
-        WHERE (status IN ('pending_review', 'scheduled', 'active'));
-      END IF;
-    END $$;
-  `);
-  console.log('  ✓ Database connected and exclusion constraint verified in Neon DB\n');
+  // 0. DB Readiness & Schema Constraint Assertion (No runtime DDL)
+  console.log('--- Step 0: Verify DB Connection & Schema Constraint Assertion ---');
+  const constraintCheck = await pool.query(
+    `SELECT conname FROM pg_constraint WHERE conname = 'no_overlapping_freezes'`,
+  );
+  assert(
+    constraintCheck.rows.length > 0,
+    'Verified database schema contains no_overlapping_freezes exclusion constraint (applied via migration)',
+  );
+  console.log('  ✓ Database connected and migration constraints verified in Neon DB\n');
 
   // 1. Meta & Health Inspection
   console.log('--- Step 1: Health & Meta Inspection ---');
@@ -761,7 +759,7 @@ async function run() {
   assert(paymentRes.body.invoice.invoiceNumber === 'INV-000001', 'Generated gapless sequential invoice: INV-000001');
 
   // 11. Shift Closeout & Blind Cash Reconciliation
-  console.log('\n--- Step 11: Shift Closeout & Variance Calculation ---');
+  console.log('\n--- Step 11: Shift Closeout, Variance Approval & Anomaly Reports ---');
   const closeShiftRes = await request(
     'POST',
     `/shifts/${shiftId}/close`,
@@ -774,6 +772,117 @@ async function run() {
   assert(closeShiftRes.status === 201, 'Closed cashier shift');
   assert(closeShiftRes.body.reconciliation.expectedCashMinor === 72500, 'Expected cash: 725.00 AED (float + sales)');
   assert(closeShiftRes.body.reconciliation.varianceMinor === 0, 'Variance is exactly 0.00 AED (balanced)');
+  assert(closeShiftRes.body.reconciliation.status === 'closed', 'Shift status is closed');
+
+  // Milestone 4: Provision a manager to test variance sign-off & segregation of duties
+  const managerEmail = `manager_${randomSuffix}@gympulse.test`;
+  const managerSignUpRes = await request('POST', '/auth/sign-up/email', {
+    email: managerEmail,
+    password,
+    name: 'Zayd Al-Manager',
+  });
+  assert(managerSignUpRes.status === 200, 'Registered manager user');
+
+  const managerSignInRes = await request('POST', '/auth/sign-in/email', {
+    email: managerEmail,
+    password,
+  });
+  const managerAllCookies = [...(managerSignUpRes.cookies || []), ...(managerSignInRes.cookies || [])];
+  let managerCookie = '';
+  if (managerAllCookies.length > 0) {
+    managerCookie = managerAllCookies.map((c) => c.split(';')[0]).join('; ');
+  }
+  const managerToken =
+    managerSignInRes.body?.token ||
+    managerSignInRes.body?.session?.token ||
+    managerSignUpRes.body?.token ||
+    managerSignUpRes.body?.session?.token ||
+    '';
+  if (!managerCookie && managerToken) {
+    managerCookie = `better-auth.session_token=${managerToken}`;
+  }
+  const managerHeaders = {
+    ...(managerCookie ? { Cookie: managerCookie } : {}),
+    ...(managerToken ? { Authorization: `Bearer ${managerToken}` } : {}),
+    'x-gym-id': gymId,
+  };
+
+  const assignManagerRes = await request(
+    'POST',
+    '/gyms/staff',
+    {
+      email: managerEmail,
+      role: 'manager',
+      branchScope: 'all',
+    },
+    tenantHeaders,
+  );
+  assert(
+    assignManagerRes.status === 201 || assignManagerRes.status === 200,
+    `Assigned manager staff role (Status: ${assignManagerRes.status}, Body: ${JSON.stringify(assignManagerRes.body)})`,
+  );
+
+  // Open Shift 2 to test cash drawer variance & approval workflow
+  const shift2Res = await request(
+    'POST',
+    '/shifts/open',
+    {
+      branchId,
+      openingFloatMinor: 10000, // 100.00 AED float
+    },
+    tenantHeaders,
+  );
+  assert(shift2Res.status === 201, 'Opened shift 2 with 100.00 AED float');
+  const shift2Id = shift2Res.body.id;
+
+  // Close Shift 2 with shortage: counted 80.00 AED vs 100.00 expected (-20.00 AED variance)
+  const closeShift2Res = await request(
+    'POST',
+    `/shifts/${shift2Id}/close`,
+    {
+      countedCashMinor: 8000,
+      notes: 'Shortage detected: 20 AED missing from drawer float',
+    },
+    tenantHeaders,
+  );
+  assert(closeShift2Res.status === 201, 'Closed shift 2');
+  assert(closeShift2Res.body.reconciliation.varianceMinor === -2000, 'Recorded variance of -20.00 AED');
+  assert(closeShift2Res.body.reconciliation.requiresApproval === true, 'Shift requires manager approval');
+  assert(closeShift2Res.body.reconciliation.status === 'variance_pending', 'Shift status is variance_pending');
+
+  // Cashier self-approval must be rejected (Segregation of Duties)
+  const selfApproveRes = await request(
+    'POST',
+    `/shifts/${shift2Id}/approve`,
+    { notes: 'Attempting self approval' },
+    tenantHeaders,
+  );
+  assert(selfApproveRes.status === 400, 'Self-approval rejected with 400');
+  assert(selfApproveRes.body.code === 'SELF_APPROVAL_PROHIBITED', 'Blocked with SELF_APPROVAL_PROHIBITED');
+
+  // Manager approves shift variance with justification
+  const managerApproveRes = await request(
+    'POST',
+    `/shifts/${shift2Id}/approve`,
+    { notes: 'Shortage of 20 AED investigated and approved under reserve tolerance' },
+    managerHeaders,
+  );
+  assert(
+    managerApproveRes.status === 200 || managerApproveRes.status === 201,
+    'Manager approved shift variance',
+    managerApproveRes,
+  );
+  assert(managerApproveRes.body.shift.status === 'approved', 'Shift status updated to approved');
+
+  // Verify Anomaly Audit Reports endpoint (Spec Section 8 & Milestone 4)
+  const anomalyReportRes = await request('GET', '/reports/anomalies', null, tenantHeaders);
+  assert(anomalyReportRes.status === 200, 'Retrieved cash control & anomaly report');
+  assert(anomalyReportRes.body.summary.totalShiftsWithVariance >= 1, 'Report includes shifts with variance');
+  assert(anomalyReportRes.body.summary.totalComplimentaryExtensions >= 1, 'Report includes complimentary extensions');
+  assert(anomalyReportRes.body.staffBreakdown.length >= 1, 'Report includes staff anomaly breakdown');
+  const varianceDetail = anomalyReportRes.body.details.shiftVariances.find(s => s.shiftId === shift2Id);
+  assert(varianceDetail !== undefined, 'Report details list includes Shift 2');
+  assert(varianceDetail.varianceMinor === -2000, 'Recorded correct variance in fils (-2000)');
 
   // 12. Cryptographic SHA-256 Audit Trail Verification
   console.log('\n--- Step 12: Cryptographic Audit Trail Verification ---');
@@ -963,11 +1072,11 @@ async function run() {
   const parFailed = par1Success ? par2 : par1;
   assert(
     parFailed.status === 400 || parFailed.status === 409,
-    'Conflicting parallel submission rejected with 400 or 409',
+    `Conflicting parallel submission rejected with 400 or 409 (Got status: ${parFailed.status}, Body: ${JSON.stringify(parFailed.body)})`,
   );
   assert(
     parFailed.body.code === 'FREEZE_OVERLAP' || parFailed.body.reasons?.includes('FREEZE_OVERLAP'),
-    'Conflicting submission rejected with FREEZE_OVERLAP',
+    `Conflicting submission rejected with FREEZE_OVERLAP (Got: ${JSON.stringify(parFailed.body)})`,
   );
 
   // Clean up the accepted parallel freeze
@@ -1013,6 +1122,25 @@ async function run() {
   const frozenMemberCheck = await request('GET', `/memberships/${m2MembershipId}`, null, tenantHeaders);
   assert(frozenMemberCheck.body.status === 'frozen', 'Membership status transitioned to frozen');
 
+  // Attendance tap while frozen must be rejected (Spec Section 6.2)
+  const frozenAttendanceRes = await request(
+    'POST',
+    '/attendance/tap',
+    { membershipId: m2MembershipId },
+    tenantHeaders,
+  );
+  assert(frozenAttendanceRes.status === 400, 'Attendance tap blocked while frozen');
+  assert(frozenAttendanceRes.body.code === 'MEMBERSHIP_FROZEN', 'Blocked with code MEMBERSHIP_FROZEN');
+
+  const selfTapFrozenRes = await request(
+    'POST',
+    '/access/self-tap',
+    { membershipId: m2MembershipId },
+    tenantHeaders,
+  );
+  assert(selfTapFrozenRes.status === 400, 'Self-tap blocked while frozen');
+  assert(selfTapFrozenRes.body.code === 'FREEZE_ACTIVE', 'Blocked with RFC 7807 code FREEZE_ACTIVE');
+
   // Early lift by front desk with manager PIN
   const earlyLiftRes = await request(
     'POST',
@@ -1055,6 +1183,77 @@ async function run() {
   const liftAdjustment = restoredMembershipRes.body.adjustments.find(a => a.kind === 'freeze_early_lift');
   assert(liftAdjustment !== undefined, 'Adjustment ledger contains freeze_early_lift entry');
   assert(liftAdjustment.freezeId === activeFreezeId, 'Adjustment links to freezeId');
+
+  // Attendance tap while active succeeds (Tap-to-mark attendance from app)
+  const activeAttendanceRes = await request(
+    'POST',
+    '/attendance/tap',
+    { membershipId: m2MembershipId },
+    tenantHeaders,
+  );
+  assert(activeAttendanceRes.status === 201 || activeAttendanceRes.status === 200, 'Attendance tap marked successfully');
+  assert(activeAttendanceRes.body.result === 'allowed', 'Attendance check-in allowed');
+  assert(activeAttendanceRes.body.checkIn.memberId === member2Res.body.id, 'Recorded correct memberId in check-in');
+
+  // Verify attendance history
+  const historyRes = await request(
+    'GET',
+    `/attendance/history?memberId=${member2Res.body.id}`,
+    null,
+    tenantHeaders,
+  );
+  assert(historyRes.status === 200, 'Fetched attendance history');
+  assert(historyRes.body.total >= 1, 'History contains recorded check-ins');
+
+  // Ingress Adapter Test: Temporary Stopgap Self-Tap (POST /v1/access/self-tap)
+  console.log('  Testing temporary stopgap self-tap attendance logger...');
+  const member3Res = await request(
+    'POST',
+    '/members',
+    {
+      fullName: 'TapUser Member',
+      phone: `+97150888${Math.floor(1000 + Math.random() * 9000)}`,
+      email: `tapper_${Date.now()}@test.ae`,
+      gender: 'female',
+    },
+    tenantHeaders,
+  );
+  assert(member3Res.status === 201, 'Registered Member 3 for Self-Tap verification', member3Res);
+
+  const member3SubRes = await request(
+    'POST',
+    '/memberships',
+    {
+      memberId: member3Res.body.id,
+      planId,
+      startDate: todayStr,
+    },
+    tenantHeaders,
+  );
+  assert(member3SubRes.status === 201, 'Provisioned membership for Member 3 starting today');
+  const m3MembershipId = member3SubRes.body.id;
+
+  const selfTapRes = await request(
+    'POST',
+    '/access/self-tap',
+    { membershipId: m3MembershipId },
+    tenantHeaders,
+  );
+  assert(selfTapRes.status === 200 || selfTapRes.status === 201, 'Self-tap recorded visit successfully', selfTapRes);
+  assert(selfTapRes.body.result === 'allowed', 'Self-tap marked result allowed');
+  assert(selfTapRes.body.method === 'self_tap_temporary', 'Method tagged strictly as self_tap_temporary');
+  assert(selfTapRes.body.checkIn.verifiedBy === null, 'verified_by is NULL for honor-system in-app tap');
+  assert(selfTapRes.body.streak.message === 'Visit Logged for Today', 'Returned client streak semantics');
+
+  // Cooldown Anti-Spam Check: second tap within window must return HTTP 429
+  const cooldownRes = await request(
+    'POST',
+    '/access/self-tap',
+    { membershipId: m3MembershipId },
+    tenantHeaders,
+  );
+  assert(cooldownRes.status === 429, 'Duplicate tap within cooldown window rejected with HTTP 429', cooldownRes);
+  assert(cooldownRes.body.code === 'SELF_CHECKIN_COOLDOWN_ACTIVE', 'Rejected with SELF_CHECKIN_COOLDOWN_ACTIVE');
 
   // 16b. Per-Gym Daily Job & Lazy Settlement Verification (Spec Section 6.2 & 7.4)
   console.log('\n--- Step 16b: Daily Batch Settlement Job & Lazy Scan Settlement ---');
@@ -1225,15 +1424,318 @@ async function run() {
   );
   assert(rejectRenewOnCancelledRes.status === 400, 'Cancelled membership rejects renewal attempts');
 
-  // 19. Final Cryptographic SHA-256 Audit Trail Verification Across All Operations
-  console.log('\n--- Step 19: Final Cryptographic SHA-256 Audit Trail Verification ---');
+  // 19. Cryptographic Audit Trail Verification Mid-Point
+  console.log('\n--- Step 19: Cryptographic Audit Trail Verification Mid-Point ---');
+  const midAuditRes = await request('POST', '/gyms/audit-logs/verify', null, tenantHeaders);
+  assert(midAuditRes.status === 201, 'Verified cryptographic audit chain integrity at mid-point');
+  assert(midAuditRes.body.isValid === true, '100% hash chain integrity verified');
+
+  // 20. Platform Superadmin Setup & SaaS Plans Discovery
+  console.log('\n--- Step 20: Platform Superadmin Setup & SaaS Plans Discovery ---');
+  const saasPlansRes = await request('GET', '/platform/saas-plans', null, adminHeaders);
+  assert(saasPlansRes.status === 200, 'Superadmin retrieved SaaS plans');
+  assert(Array.isArray(saasPlansRes.body) && saasPlansRes.body.length >= 3, 'Default plans (Starter, Growth, Enterprise) exist');
+  const starterPlan = saasPlansRes.body.find((p) => p.code === 'starter');
+  const growthPlan = saasPlansRes.body.find((p) => p.code === 'growth');
+  assert(starterPlan && growthPlan, 'Starter and Growth plans identified');
+
+  // 21. Subscription Provisioning & Gapless Sequential Platform Tax Invoicing
+  console.log('\n--- Step 21: Subscription Provisioning & Gapless Sequential Platform Tax Invoicing ---');
+  const provisionRes = await request(
+    'POST',
+    '/platform/subscriptions',
+    {
+      gymId,
+      saasPlanId: growthPlan.id,
+      billingMethod: 'bank_transfer',
+      startDate: todayStr,
+    },
+    adminHeaders,
+  );
+  assert(provisionRes.status === 201, 'Provisioned Growth SaaS plan for tenant gym');
+  assert(provisionRes.body.subscription.status === 'active', 'Subscription is active');
+  assert(provisionRes.body.invoice.series === 'GP-INV', 'Platform invoice series is GP-INV');
+  assert(provisionRes.body.invoice.invoiceNumber.startsWith('GP-INV-'), 'Platform invoice number is GP-INV-000001');
+  assert(provisionRes.body.invoice.supplier.trn === '100987654300003', 'Supplier TRN matches GymPulse UAE legal identity');
+  assert(provisionRes.body.invoice.totals.grandTotalMinor === 83895, '5% UAE VAT calculated: 79900 + 3995 = 83895 fils');
+  const growthInvoiceId = provisionRes.body.invoice.id;
+
+  // Tenant retrieves subscription and invoice status
+  const tenantSubRes = await request('GET', '/subscription', null, tenantHeaders);
+  assert(tenantSubRes.status === 200, 'Tenant retrieved subscription details');
+  assert(tenantSubRes.body.plan.code === 'growth', 'Tenant plan is Growth');
+  assert(tenantSubRes.body.isRestricted === false && tenantSubRes.body.isSuspended === false, 'Tenant is not restricted');
+  assert(tenantSubRes.body.limits.maxMembers === 500, 'Growth plan member limit is 500');
+
+  const tenantInvoicesRes = await request('GET', '/subscription/invoices', null, tenantHeaders);
+  assert(tenantInvoicesRes.status === 200, 'Tenant retrieved platform invoices');
+  assert(tenantInvoicesRes.body.length >= 1, 'Platform invoice visible to tenant');
+  assert(tenantInvoicesRes.body[0].isPaid === false, 'Invoice is initially unpaid');
+
+  // 22. Unsubscribed Gym Member Cap Enforcement (Spec 4.2)
+  console.log('\n--- Step 22: Unsubscribed Gym Member Cap Enforcement (Max 10 Members) ---');
+  const unsubSuffix = Math.random().toString(36).substring(2, 7);
+  const unsubEmail = `owner2_${unsubSuffix}@gympulse.test`;
+  const unsubSignUpRes = await request('POST', '/auth/sign-up/email', {
+    name: 'Unsubscribed Gym Owner',
+    email: unsubEmail,
+    password: 'StrongPassword123!',
+  });
+  assert(unsubSignUpRes.status === 200 || unsubSignUpRes.status === 201, 'Signed up owner for unsubscribed gym', unsubSignUpRes);
+
+  const unsubSignInRes = await request('POST', '/auth/sign-in/email', {
+    email: unsubEmail,
+    password: 'StrongPassword123!',
+  });
+  assert(unsubSignInRes.status === 200, 'Signed in owner for unsubscribed gym', unsubSignInRes);
+
+  const unsubToken = unsubSignInRes.body?.token || unsubSignInRes.body?.session?.token;
+  const unsubCookies = [...(unsubSignUpRes.cookies || []), ...(unsubSignInRes.cookies || [])];
+  const unsubCookie = unsubCookies.map((c) => c.split(';')[0]).join('; ');
+  const unsubAuthHeaders = {
+    ...(unsubCookie ? { Cookie: unsubCookie } : {}),
+    ...(unsubToken ? { Authorization: `Bearer ${unsubToken}` } : {}),
+  };
+
+  const unsubCreateGymRes = await request(
+    'POST',
+    '/gyms',
+    {
+      legalName: `Unsubscribed Gym LLC ${unsubSuffix}`,
+      tradeName: `Unsubscribed Fitness ${unsubSuffix}`,
+      tradeLicenseNumber: `DXB-UNSUB-${unsubSuffix.toUpperCase()}`,
+      vatRegistered: false,
+      timezone: 'Asia/Dubai',
+      currency: 'AED',
+    },
+    unsubAuthHeaders,
+  );
+  assert(unsubCreateGymRes.status === 201, 'Created unsubscribed gym', unsubCreateGymRes);
+  const unsubGymId = unsubCreateGymRes.body.gym.id;
+  await pool.query(`UPDATE "gyms" SET "status" = 'active' WHERE "id" = $1;`, [unsubGymId]);
+  const unsubTenantHeaders = {
+    ...unsubAuthHeaders,
+    'x-gym-id': unsubGymId,
+  };
+
+  // Register 10 members in the unsubscribed gym
+  for (let i = 1; i <= 10; i++) {
+    const regRes = await request(
+      'POST',
+      '/members',
+      {
+        fullName: `UnsubMember ${i}`,
+        phone: `+9715800${String(i).padStart(2, '0')}${Math.floor(100 + Math.random() * 900)}`,
+        email: `unsub${i}_${unsubSuffix}@test.ae`,
+        gender: 'male',
+      },
+      unsubTenantHeaders,
+    );
+    assert(regRes.status === 201, `Registered member ${i}/10 in unsubscribed gym`, regRes);
+  }
+
+  // 11th member must be rejected with 403 MEMBER_LIMIT_UNSUBSCRIBED
+  const eleventhMemberRes = await request(
+    'POST',
+    '/members',
+    {
+      fullName: 'Eleventh Member',
+      phone: `+971580001099`,
+      email: `eleventh_${unsubSuffix}@test.ae`,
+      gender: 'male',
+    },
+    unsubTenantHeaders,
+  );
+  assert(eleventhMemberRes.status === 403, '11th member rejected with 403 Forbidden', eleventhMemberRes);
+  assert(eleventhMemberRes.body.code === 'MEMBER_LIMIT_UNSUBSCRIBED', 'Rejected with code MEMBER_LIMIT_UNSUBSCRIBED');
+
+  // 23. Dunning Engine State Transitions & Restriction Lifting
+  console.log('\n--- Step 23: Dunning Engine State Transitions & Restriction Lifting ---');
+  // Set dueOn for growth invoice to 15 days in the past
+  const pastDueStr = calcAddDays(todayStr, -15);
+  await pool.query(
+    `UPDATE "platform_invoices" SET "due_on" = $1 WHERE "id" = $2;`,
+    [pastDueStr, growthInvoiceId],
+  );
+
+  // Run dunning sweep
+  const sweepRes = await request('POST', '/platform/subscriptions/sweep', { asOfDate: todayStr }, adminHeaders);
+  assert(sweepRes.status === 201, 'Executed dunning engine sweep');
+  assert(sweepRes.body.restrictedCount >= 1, 'Subscription transitioned to restricted (+14 days overdue)');
+
+  // Verify tenant operations are restricted
+  const blockedRegRes = await request(
+    'POST',
+    '/members',
+    {
+      fullName: 'Blocked Member',
+      phone: `+971507771122`,
+      gender: 'female',
+    },
+    tenantHeaders,
+  );
+  assert(blockedRegRes.status === 403, 'New member registration blocked under restricted status', blockedRegRes);
+  assert(blockedRegRes.body.code === 'SUBSCRIPTION_RESTRICTED', 'Returns SUBSCRIPTION_RESTRICTED');
+
+  const blockedFreezeRes = await request(
+    'POST',
+    `/memberships/${membershipId}/freezes`,
+    {
+      startDate: todayStr,
+      endDate: calcAddDays(todayStr, 3),
+      reasonCode: 'medical',
+    },
+    tenantHeaders,
+  );
+  assert(blockedFreezeRes.status === 403, 'Freeze creation blocked under restricted status');
+  assert(blockedFreezeRes.body.code === 'SUBSCRIPTION_RESTRICTED', 'Returns SUBSCRIPTION_RESTRICTED');
+
+  // Superadmin records payment for invoice: lifts restrictions immediately!
+  const payInvoiceRes = await request(
+    'POST',
+    `/platform/invoices/${growthInvoiceId}/payments`,
+    {
+      method: 'bank_transfer',
+      amountMinor: 83895,
+      receivedOn: todayStr,
+      reference: 'TXN-BANK-12345',
+    },
+    adminHeaders,
+  );
+  assert(payInvoiceRes.status === 201, 'Recorded platform invoice payment', payInvoiceRes);
+  assert(payInvoiceRes.body.isPaid === true, 'Platform invoice marked as fully paid', payInvoiceRes);
+  assert(payInvoiceRes.body.restrictionLifted === true, 'Subscription restriction lifted immediately upon payment', payInvoiceRes);
+
+  // Verify tenant subscription is restored to active
+  const restoredSubRes = await request('GET', '/subscription', null, tenantHeaders);
+  assert(restoredSubRes.status === 200, 'Tenant fetched subscription');
+  assert(restoredSubRes.body.subscription.status === 'active', 'Subscription status restored to active');
+  assert(restoredSubRes.body.isRestricted === false, 'Tenant restriction flag cleared');
+
+  // 24. Dunning Engine Suspension (+30 Days Overdue) & Check-In Block
+  console.log('\n--- Step 24: Dunning Engine Suspension (+30 Days Overdue) & Check-In Block ---');
+  // Provision subscription for unsubGymId to test suspension
+  const thirtyFiveDaysAgo = calcAddDays(todayStr, -35);
+  const subToSuspendRes = await request(
+    'POST',
+    '/platform/subscriptions',
+    {
+      gymId: unsubGymId,
+      saasPlanId: starterPlan.id,
+      startDate: calcAddDays(todayStr, -60),
+      dueDays: 0,
+    },
+    adminHeaders,
+  );
+  assert(subToSuspendRes.status === 201, 'Provisioned subscription for suspension test');
+  await pool.query(
+    `UPDATE "platform_invoices" SET "due_on" = $1 WHERE "id" = $2;`,
+    [thirtyFiveDaysAgo, subToSuspendRes.body.invoice.id],
+  );
+
+  const suspendSweepRes = await request('POST', '/platform/subscriptions/sweep', { asOfDate: todayStr }, adminHeaders);
+  assert(suspendSweepRes.status === 201, 'Executed sweep for suspension');
+  assert(suspendSweepRes.body.suspendedCount >= 1, 'Subscription transitioned to suspended (+30 days overdue)');
+
+  // Attempt check-in on suspended gym: must be rejected with 403 SUBSCRIPTION_SUSPENDED
+  const suspendedCheckInRes = await request(
+    'POST',
+    '/access/self-tap',
+    {
+      gymId: unsubGymId,
+      memberId: '00000000-0000-0000-0000-000000000001',
+      membershipId: '00000000-0000-0000-0000-000000000002',
+    },
+    unsubTenantHeaders,
+  );
+  assert(suspendedCheckInRes.status === 403, 'Check-in blocked for suspended gym');
+  assert(suspendedCheckInRes.body.code === 'SUBSCRIPTION_SUSPENDED', 'Returns SUBSCRIPTION_SUSPENDED');
+
+  // 25. Transactional Outbox (Deduplication, Dispatch, Backoff & DLQ)
+  console.log('\n--- Step 25: Transactional Outbox (Deduplication, Dispatch, Backoff & DLQ) ---');
+  const dedupeKeySuccess = `notif_success_${Date.now()}`;
+  const outboxSuccessRes = await request('POST', '/outbox/enqueue', {
+    channel: 'push',
+    template: 'welcome_packet',
+    payload: { memberName: 'Jane Doe' },
+    dedupeKey: dedupeKeySuccess,
+  }, tenantHeaders);
+  assert(outboxSuccessRes.status === 201, 'Enqueued transactional outbox notification');
+  assert(outboxSuccessRes.body.status === 'pending', 'Outbox status is pending');
+  assert(outboxSuccessRes.body.isDuplicate === false, 'Initial item is not duplicate');
+
+  // Deduplication check: re-enqueue same dedupeKey
+  const outboxDedupeRes = await request('POST', '/outbox/enqueue', {
+    channel: 'push',
+    template: 'welcome_packet',
+    payload: { memberName: 'Jane Doe' },
+    dedupeKey: dedupeKeySuccess,
+  }, tenantHeaders);
+  assert(outboxDedupeRes.status === 201, 'Idempotent enqueue returned existing item');
+  assert(outboxDedupeRes.body.isDuplicate === true, 'Duplicate correctly flagged');
+
+  // Enqueue a failing item
+  const dedupeKeyFail = `notif_fail_${Date.now()}`;
+  const outboxFailRes = await request('POST', '/outbox/enqueue', {
+    channel: 'sms',
+    template: 'payment_alert',
+    payload: { shouldFail: true },
+    dedupeKey: dedupeKeyFail,
+  }, tenantHeaders);
+  assert(outboxFailRes.status === 201, 'Enqueued failing notification for retry testing');
+
+  // Platform dispatch sweep
+  const dispatch1Res = await request('POST', '/platform/outbox/dispatch', { limit: 10 }, adminHeaders);
+  assert(dispatch1Res.status === 201, 'Dispatched pending outbox queue');
+  assert(dispatch1Res.body.sentCount >= 1, 'Successful notification delivered');
+  assert(dispatch1Res.body.failedCount >= 1, 'Failing notification transitioned to failed with retry scheduled');
+
+  // Simulate reaching 5 attempts for dead-letter queue (DLQ)
+  await pool.query(
+    `UPDATE "notification_outbox" SET "attempts" = 4, "next_attempt_at" = NOW() - INTERVAL '1 minute' WHERE "dedupe_key" = $1;`,
+    [dedupeKeyFail],
+  );
+  const dispatch2Res = await request('POST', '/platform/outbox/dispatch', { limit: 10 }, adminHeaders);
+  assert(dispatch2Res.status === 201, 'Dispatched outbox again for DLQ test');
+  assert(dispatch2Res.body.deadCount >= 1, 'Max attempts exhausted: item transitioned to dead (DLQ)');
+
+  // Inspect outbox items
+  const outboxListRes = await request('GET', '/outbox?limit=10', null, tenantHeaders);
+  assert(outboxListRes.status === 200, 'Tenant retrieved outbox log');
+  assert(Array.isArray(outboxListRes.body) && outboxListRes.body.length >= 2, 'Outbox entries retrieved');
+
+  // 26. Executive Analytics & Reports Endpoints
+  console.log('\n--- Step 26: Executive Analytics & Reports Endpoints ---');
+  // Revenue report
+  const revenueRes = await request('GET', '/reports/revenue', null, tenantHeaders);
+  assert(revenueRes.status === 200, 'Retrieved executive revenue report');
+  assert(revenueRes.body.summary.grossSalesMinor > 0, 'Gross sales recorded');
+  assert(revenueRes.body.summary.vatRatePercent === 5, '5% VAT rate applied');
+  assert(revenueRes.body.summary.vatMinor > 0, 'VAT amount calculated');
+  assert(revenueRes.body.summary.netSalesMinor === revenueRes.body.summary.grossSalesMinor - revenueRes.body.summary.vatMinor, 'Net sales equals gross minus VAT');
+  assert(revenueRes.body.byMethod.cash || revenueRes.body.byMethod.pos_card, 'Breakdown by payment method present');
+
+  // Check-ins report & heatmap
+  const checkinsReportRes = await request('GET', '/reports/checkins', null, tenantHeaders);
+  assert(checkinsReportRes.status === 200, 'Retrieved check-in analytics and heatmap');
+  assert(checkinsReportRes.body.summary.totalCheckIns > 0, 'Check-ins logged');
+  assert(checkinsReportRes.body.byMethod.self_tap_temporary > 0, 'Self-tap check-in visits tracked');
+  assert(checkinsReportRes.body.hourlyDistribution.length === 24, '24-hour heatmap distribution populated');
+
+  // Manual adjustments report
+  const adjustmentsReportRes = await request('GET', '/reports/manual-adjustments', null, tenantHeaders);
+  assert(adjustmentsReportRes.status === 200, 'Retrieved manual adjustments report');
+  assert(adjustmentsReportRes.body.summary.totalAdjustments >= 0, 'Adjustments summary present');
+
+  // 27. Final Cryptographic SHA-256 Audit Trail Verification Across All Operations
+  console.log('\n--- Step 27: Final Cryptographic SHA-256 Audit Trail Verification ---');
   const finalAuditRes = await request('POST', '/gyms/audit-logs/verify', null, tenantHeaders);
   assert(finalAuditRes.status === 201, 'Verified complete cryptographic audit chain across all stages');
   assert(finalAuditRes.body.isValid === true, '100% hash chain integrity verified (zero tampering)');
   console.log(`  ✓ Total verified audit chain records: ${finalAuditRes.body.verifiedCount}`);
 
   console.log('\n================================================================');
-  console.log('🎉 ALL 19 TEST SUITE STAGES PASSED SUCCESSFULLY!');
+  console.log('🎉 ALL 27 TEST SUITE STAGES PASSED SUCCESSFULLY!');
   console.log('================================================================');
 }
 

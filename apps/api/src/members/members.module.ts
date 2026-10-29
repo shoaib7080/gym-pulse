@@ -4,9 +4,10 @@ import { MembersService } from './members.service';
 import { MembersController } from './members.controller';
 
 import { ActiveGymGuard } from '../common/guards/active-gym.guard';
+import { SubscriptionsModule } from '../subscriptions/subscriptions.module';
 
 @Module({
-  imports: [DbModule],
+  imports: [DbModule, SubscriptionsModule],
   controllers: [MembersController],
   providers: [MembersService, ActiveGymGuard],
   exports: [MembersService],

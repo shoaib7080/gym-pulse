@@ -15,6 +15,10 @@ import { ShiftsModule } from './shifts/shifts.module';
 import { PaymentsModule } from './payments/payments.module';
 import { EmailModule } from './common/email/email.module';
 import { FreezesModule } from './freezes/freezes.module';
+import { AttendanceModule } from './attendance/attendance.module';
+import { ReportsModule } from './reports/reports.module';
+import { SubscriptionsModule } from './subscriptions/subscriptions.module';
+import { OutboxModule } from './outbox/outbox.module';
 
 @Module({
   imports: [
@@ -33,8 +37,12 @@ import { FreezesModule } from './freezes/freezes.module';
     PlansModule,
     MembershipsModule,
     FreezesModule,
+    AttendanceModule,
     ShiftsModule,
     PaymentsModule,
+    ReportsModule,
+    SubscriptionsModule,
+    OutboxModule,
     PlatformModule,
   ],
   controllers: [AppController],

@@ -32,12 +32,14 @@ import { AuditService } from '../common/audit/audit.service';
 import { scopeEntityToGym, scopeToGym } from '../common/tenant/tenant-scope.helper';
 import { toUuidOrNull } from '../freezes/freezes.service';
 import { getGymLocalDate } from '../common/utils/dates';
+import { SubscriptionsService } from '../subscriptions/subscriptions.service';
 
 @Injectable()
 export class PaymentsService {
   constructor(
     @Inject(DB) private readonly db: Database,
     private readonly auditService: AuditService,
+    private readonly subscriptionsService: SubscriptionsService,
   ) {}
 
   /**
@@ -49,8 +51,12 @@ export class PaymentsService {
    * 4. Immutable tax invoice creation
    * 5. Membership activation if applicable
    * 6. Tamper-evident cryptographic audit log
+   * 7. SaaS subscription dunning restriction check
    */
   async createDeskPayment(gymId: string, rawInput: unknown, actorUserId?: string) {
+    // Enforce platform SaaS subscription status
+    await this.subscriptionsService.checkPaymentAllowed(gymId);
+
     const parseResult = deskPaymentSchema.safeParse(rawInput);
     if (!parseResult.success) {
       throw new BadRequestException({

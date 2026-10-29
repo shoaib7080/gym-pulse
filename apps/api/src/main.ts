@@ -13,4 +13,5 @@ async function bootstrap() {
   await app.listen(port);
   console.log(`API listening on http://localhost:${port}/${API_PREFIX}`);
 }
+// GymPulse Modular Monolith Entrypoint (Access & Stopgap Ingress Loaded)
 bootstrap();

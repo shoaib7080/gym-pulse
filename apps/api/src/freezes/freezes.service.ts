@@ -3,6 +3,7 @@ import {
   ConflictException,
   Inject,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { and, desc, eq, inArray, isNull, sql } from 'drizzle-orm';
@@ -29,6 +30,7 @@ import {
 import { AuditService } from '../common/audit/audit.service';
 import { scopeEntityToGym, scopeToGym } from '../common/tenant/tenant-scope.helper';
 import { getGymLocalDate } from '../common/utils/dates';
+import { SubscriptionsService } from '../subscriptions/subscriptions.service';
 
 export { getGymLocalDate };
 
@@ -73,9 +75,12 @@ export interface EligibilityResult {
 
 @Injectable()
 export class FreezesService {
+  private readonly logger = new Logger(FreezesService.name);
+
   constructor(
     @Inject(DB) private readonly db: Database,
     private readonly auditService: AuditService,
+    private readonly subscriptionsService: SubscriptionsService,
   ) {}
 
   /**
@@ -622,6 +627,9 @@ export class FreezesService {
     actorRole?: string,
     idempotencyKey?: string,
   ) {
+    // Enforce platform SaaS subscription status (restricted gyms cannot add freezes)
+    await this.subscriptionsService.checkFreezeAllowed(gymId);
+
     if (input.startDate > input.endDate) {
       throw new BadRequestException({
         code: 'VALIDATION_FAILED',
@@ -704,7 +712,8 @@ export class FreezesService {
 
     const source: 'member_app' | 'staff' = isStaff ? 'staff' : 'member_app';
 
-    return await this.db.transaction(async (tx) => {
+    try {
+      return await this.db.transaction(async (tx) => {
       // 6. Insert membership_freezes row (guarded by PostgreSQL exclusion constraint)
       let newFreeze;
       try {
@@ -727,17 +736,40 @@ export class FreezesService {
           .returning();
         newFreeze = inserted;
       } catch (err: any) {
+        const errCode = err?.code || err?.cause?.code;
+        const errMsg = `${err?.message || ''} ${err?.cause?.message || ''}`;
+        const constraint = err?.constraint || err?.cause?.constraint;
+
         if (
-          err?.code === '23P01' ||
-          err?.code === '23505' ||
-          err?.message?.includes('no_overlapping_freezes') ||
-          err?.constraint === 'no_overlapping_freezes'
+          constraint === 'no_overlapping_freezes' ||
+          errCode === '23P01' ||
+          errMsg.toLowerCase().includes('no_overlapping_freezes') ||
+          errMsg.toLowerCase().includes('exclusion')
         ) {
           throw new ConflictException({
             code: 'FREEZE_OVERLAP',
             message: 'A freeze request already exists or overlaps (or is back-to-back) with these dates',
           });
         }
+
+        if (
+          constraint === 'adjustment_once_per_freeze' ||
+          errMsg.toLowerCase().includes('adjustment_once_per_freeze')
+        ) {
+          throw new ConflictException({
+            code: 'FREEZE_ALREADY_LIFTED',
+            message: 'This freeze has already been lifted or settled in the ledger',
+          });
+        }
+
+        if (errCode === '23505') {
+          this.logger.error(`Unique constraint violation on constraint '${constraint || 'unknown'}': ${errMsg}`);
+          throw new ConflictException({
+            code: 'RESOURCE_CONFLICT',
+            message: 'A conflicting record already exists',
+          });
+        }
+
         throw err;
       }
 
@@ -802,7 +834,66 @@ export class FreezesService {
 
       return newFreeze;
     });
+  } catch (err: any) {
+    if (
+      err instanceof ConflictException ||
+      err instanceof BadRequestException ||
+      err instanceof NotFoundException
+    ) {
+      throw err;
+    }
+    if (
+      err?.cause instanceof ConflictException ||
+      err?.cause instanceof BadRequestException ||
+      err?.cause instanceof NotFoundException
+    ) {
+      throw err.cause;
+    }
+    const errCode = err?.code || err?.cause?.code;
+    const errMsg = `${err?.message || ''} ${err?.cause?.message || ''}`;
+    const constraint = err?.constraint || err?.cause?.constraint;
+
+    if (
+      constraint === 'no_overlapping_freezes' ||
+      errCode === '23P01' ||
+      errMsg.toLowerCase().includes('no_overlapping_freezes') ||
+      errMsg.toLowerCase().includes('exclusion') ||
+      errMsg.toLowerCase().includes('freeze_overlap')
+    ) {
+      throw new ConflictException({
+        code: 'FREEZE_OVERLAP',
+        message: 'A freeze request already exists or overlaps (or is back-to-back) with these dates',
+      });
+    }
+
+    if (
+      constraint === 'adjustment_once_per_freeze' ||
+      errMsg.toLowerCase().includes('adjustment_once_per_freeze')
+    ) {
+      throw new ConflictException({
+        code: 'FREEZE_ALREADY_LIFTED',
+        message: 'This freeze has already been lifted or settled in the ledger',
+      });
+    }
+
+    if (errCode === '40P01' || errCode === '40001') {
+      throw new ConflictException({
+        code: 'FREEZE_OVERLAP',
+        message: 'A freeze request already exists or overlaps (or is back-to-back) with these dates',
+      });
+    }
+
+    if (errCode === '23505') {
+      this.logger.error(`Unique constraint violation on constraint '${constraint || 'unknown'}': ${errMsg}`);
+      throw new ConflictException({
+        code: 'RESOURCE_CONFLICT',
+        message: 'A conflicting record already exists',
+      });
+    }
+
+    throw err;
   }
+}
 
   /**
    * List freezes for gym with optional filters
@@ -1261,10 +1352,25 @@ export class FreezesService {
           createdBy: toUuidOrNull(actorUserId),
         });
       } catch (err: any) {
-        if (err?.code === '23505' || err?.message?.includes('adjustment_once_per_freeze')) {
+        const errCode = err?.code || err?.cause?.code;
+        const errMsg = `${err?.message || ''} ${err?.cause?.message || ''}`;
+        const constraint = err?.constraint || err?.cause?.constraint;
+
+        if (
+          constraint === 'adjustment_once_per_freeze' ||
+          errMsg.toLowerCase().includes('adjustment_once_per_freeze')
+        ) {
           throw new ConflictException({
             code: 'FREEZE_ALREADY_LIFTED',
             message: 'This freeze has already been lifted or settled in the ledger',
+          });
+        }
+
+        if (errCode === '23505') {
+          this.logger.error(`Unique constraint violation on constraint '${constraint || 'unknown'}': ${errMsg}`);
+          throw new ConflictException({
+            code: 'RESOURCE_CONFLICT',
+            message: 'A conflicting record already exists',
           });
         }
         throw err;

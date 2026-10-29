@@ -74,13 +74,20 @@ The following deliberate architectural deviations have been implemented to enhan
 10. **ADR D-10 (Owner Verification Gate & 1-Gym Cap):** ActiveGymGuard on Mutating Routes. Gyms in `pending_verification` are gated by `ActiveGymGuard` from creating branches, members, plans, memberships, or transactions. Profile editing and document uploading remain active. Platform admins review applications via `GET /v1/platform/review-queue` and approve/reject with mandatory reasons (`POST /approve`, `POST /reject`), triggering transactional email notifications to owners. Users are capped at creating exactly 1 gym.
 11. **ADR D-11 (Blind Cash Drawer Reconciliation):** Blind Closeout Formula. Cashiers submit counted cash without being shown system expected cash. Server computes `expected = float + cashSales` and logs variance in fils.
 12. **ADR D-12 (Invoice Sequencing):** Gapless Tenant-Scoped Sequential Invoices. Invoices generate gapless sequential codes: `INV-000001`, `INV-000002` per gym for tax authority compliance.
-13. **ADR D-13 (Migrations Only & Disposable Dev Data):** Schema Changes Exclusively via Drizzle Kit. No runtime schema patching and zero ad-hoc `.cjs` migration scripts. Schema changes go strictly through `pnpm --filter api db:generate` -> review SQL -> `pnpm --filter api db:migrate`. Development data is disposable: `pnpm --filter api db:reset` drops and recreates the public schema to allow clean re-application of migrations anytime.
+13. **ADR D-13 (Migrations Only & Disposable Dev Data):** Schema Changes Exclusively via Drizzle Kit. Baseline and versioned custom migrations contain all schema objects; runtime schema patching (DDL) is completely removed from application code and tests. Schema changes go strictly through `pnpm --filter api db:generate` -> review SQL -> `pnpm --filter api db:migrate`. Development data is disposable: `pnpm --filter api db:reset` drops and recreates the public schema to allow clean re-application of migrations anytime, printing the database host (with password masked) and strictly refusing execution in production. Operational script `pnpm --filter api test:e2e:fresh` resets the DB, runs migrations, and executes the 27-stage E2E test suite against a clean genesis audit chain.
 14. **ADR D-14 (Explicit Currency on Every Money Row & Strict Tenant Scoping):** Currency on Every Money Row & Universal GymId. Every table row holding financial values (`plans`, `freeze_policies`, `membership_freezes`, `shifts`, `payments`, `invoices`, `gym_payment_accounts`) stores an explicit 3-letter currency code (`AED`, `SAR`, `INR`) in integer minor units (no floats). Every tenant table contains `gym_id` (including `staff_branch_access`), and all queries on tenant data must go through `scopeToGym` or `scopeEntityToGym`.
 15. **ADR D-15 (Turnstile Hardware De-scoping for MVP):** Physical Turnstile Hardware Cut from Phase 1. Physical turnstile integrations, on-premise relay bridges (ZKTeco/Hikvision), and onsite network adapters are completely de-scoped from Phase 1 (MVP) to eliminate network latency risks and deployment friction. Phase 1 relies strictly on high-speed software desk scanning (USB/Bluetooth HID barcode/QR scanner or browser webcam) and Ctrl+K desk search. In the Owner Dashboard, a high-converting button and callout banner ("Want automated turnstile gates? Request hardware quote.") capture enterprise interest as a Phase 2 add-on while development focuses directly on core commercial logic: payments, renewals, freeze engine, and member retention.
-16. **ADR D-16 (PostgreSQL GIST Exclusion Constraint for Freeze Non-Overlap & Back-to-Back Protection):** Database-Level Overlap & Adjacency Protection. Rule 9 is enforced at the database kernel level using PostgreSQL `btree_gist` and an exclusion constraint: `EXCLUDE USING gist (membership_id WITH =, daterange(start_date, (end_date + integer '1'), '[]') WITH &&) WHERE (status IN ('pending', 'scheduled', 'active'))`. Extending the upper bound by `+ 1` ensures that back-to-back freezes (where freeze 2 starts on freeze 1's `end_date + 1`) collide on that single boundary date, blocking both direct overlaps and adjacent back-to-back submissions concurrently without race conditions. Database violations (`23P01`, `23505`) are caught and mapped directly to `ConflictException({ code: 'FREEZE_OVERLAP' })`.
+16. **ADR D-16 (PostgreSQL GIST Exclusion Constraint for Freeze Non-Overlap & Back-to-Back Protection):** Database-Level Overlap & Adjacency Protection via Versioned Migration. Rule 9 is enforced at the database kernel level using PostgreSQL `btree_gist` and an exclusion constraint created via migration `freeze_exclusion_constraint`: `EXCLUDE USING gist (membership_id WITH =, daterange(start_date, (end_date + integer '1'), '[]') WITH &&) WHERE (status IN ('pending_review', 'scheduled', 'active'))`. Extending the upper bound by `+ 1` ensures that back-to-back freezes (where freeze 2 starts on freeze 1's `end_date + 1`) collide on that single boundary date, blocking both direct overlaps and adjacent back-to-back submissions concurrently without race conditions. Verified at startup by read-only `SchemaGuard` (throws in production if missing; logs error in development; never executes DDL). Database violations are mapped by constraint name: `constraint === 'no_overlapping_freezes'` maps to `ConflictException({ code: 'FREEZE_OVERLAP' })`; `constraint === 'adjustment_once_per_freeze'` maps to `ConflictException({ code: 'FREEZE_ALREADY_LIFTED' })`; other `23505` errors log the constraint name to server logs and return generic `RESOURCE_CONFLICT` without blindly mapping to `FREEZE_OVERLAP`.
 17. **ADR D-17 (Strict Freeze Eligibility, Segregation of Duties & Proof Retention):** Zero Backdating & Anti-Tamper Policies. Past start dates are unconditionally rejected (`FREEZE_START_IN_PAST`); `startDate <= today` strictly means `today`. Notice waivers are restricted to `owner` or `manager` with audit trail recording. The remaining-balance exception applies strictly when `requestedDays === remainingDays`. Stale approvals where the start date has passed are rejected (`APPROVAL_STALE`). Self-approval of freeze requests is prohibited (`SELF_APPROVAL_PROHIBITED`). Medical proofs carry a 30-day post-verification retention schedule (`delete_after = today + 30`) purgeable via `POST /v1/freezes/purge-proofs`. Active freezes block member archiving (`LIVE_FREEZE_ACTIVE`).
 18. **ADR D-18 (Desk Early Lift, PIN Confidentiality & Concurrency Protection):** Server-Enforced Date & Dual Concurrency Guard. Early lift effective date is server-enforced as `today` (immune to client tampering). Boundaries: pre-start lifts cancel the freeze with 0 charged; lifts on/after end date trigger normal completion. Double-lift race conditions are protected both by query state checking (`eq(status, 'active')`) and a PostgreSQL unique index `adjustment_once_per_freeze` on `(membership_id, freeze_id)`. Manager PIN is verified on step-up and authorizing manager `userId` is recorded; the PIN itself is never logged.
 19. **ADR D-19 (Payment-Backed Renewals, Invariant Frozen Status & Notice Cancellations):** Financial Integrity on Term Changes. Membership renewals (`POST /v1/memberships/:id/renew`) are executed in one atomic transaction requiring desk sale payment, tax invoice generation, and a `membership_adjustments` row linking `payment_id` (preventing free unearned time). If a member renews while in `frozen` status, the end date is extended while preserving `status: 'frozen'` and `statusBeforeFreeze`. Scheduled cancellations record `cancelEffectiveDate` while keeping the membership usable (`status: 'active'`) until the effective date. Optimistic concurrency locking is enforced across state mutations (`WHERE version = expectedVersion`).
+20. **ADR D-20 (Tap-to-Mark Attendance & Deferred Turnstiles):** Member Self-Service Check-in. Attendance tracking is implemented via `POST /v1/attendance/tap` with automatic lazy freeze settlement (`settleDueFreezesForMembership`), membership status validation (`active` only), term date math with plan grace period, and single-branch access limits (`home_only`). Ed25519 rotating QR tokens, WebSocket audio-visual scanner gateways, and turnstile relays are marked as TO DO LATER (deferred).
+21. **ADR D-21 (Shift Variance Approvals, Blind Reconciliation & Anomaly Audits):** Segregation of Duties & Cashier Anomaly Surveillance. Shift closeout requires blind submission of counted physical cash. If variance exceeds gym cash tolerance, status automatically flags as `variance_pending`. Approval via `POST /v1/shifts/:id/approve` strictly enforces segregation of duties (`SELF_APPROVAL_PROHIBITED`): the cashier who opened or closed the shift cannot approve their own variance. Automated anomaly reporting (`GET /v1/reports/anomalies`) synthesizes shift drawer discrepancies, complimentary extensions (unearned free time fraud vector), voids, and manual check-in overrides into per-staff risk profiles with SHA-256 audit logs.
+22. **ADR D-22 (Temporary In-App Self-Tap Stopgap & Decoupled Adapter Architecture):** Decoupled Ingress Transport & Honor-System Tagging. Self-tap check-in is an explicit TEMPORARY STOPGAP designed to record member attendance in the mobile app until physical hardware integrations (turnstiles / ZKTeco biometric sync) launch. It strictly avoids technical debt or domain pollution:
+    - **Architectural Decoupling (Adapter Pattern):** Ingress endpoint `POST /v1/access/self-tap` acts solely as an ingress transport adapter emitting a standardized `MemberCheckInAttemptEvent` to an abstract `CheckInService` (`ICheckInService`). It never directly mutates billing or membership lifecycles.
+    - **Domain Validation & Anti-Spam:** Requires strictly `active` membership status. If `frozen`, rejects with RFC 7807 problem details (`FREEZE_ACTIVE`). If expired or non-active, rejects with `MEMBERSHIP_NOT_ELIGIBLE`. Enforces an 8-hour sliding cooldown per member, rejecting duplicates with HTTP 429 (`SELF_CHECKIN_COOLDOWN_ACTIVE`) and remaining cooldown minutes. Feature gated dynamically via `gym.settings.temp_self_checkin_enabled` (rejects with HTTP 403 `SELF_CHECKIN_DISABLED` if false).
+    - **Persistence & Audit:** Inserts into `check_ins` with `method = 'self_tap_temporary'`, `result = 'allowed'`, `verified_by = NULL` (mandatory null for unverified honor-system taps), enabling historical reporting to cleanly isolate stopgap app taps from hardware/biometric punches.
+    - **Client UI/UX Semantics (Mobile App Backlog):** Prohibited from being branded or styled as a "Digital Key" or "Door Unlocker". Styled strictly as a lightweight attendance/workout logger ("Mark Today's Visit" or "Log Workout"). On tap: transitions to disabled state ("Visit Logged for Today") with haptic feedback and updates the member's monthly streak calendar.
 
 ---
 
@@ -482,16 +489,50 @@ Guarded by `AuthGuard`, `PlatformAdminGuard`, and `PlatformRolesGuard`:
 - `POST /v1/platform/admins` — `@PlatformRoles('superadmin')` — Promotes a user to platform administrator (mandatory reason required, audited).
 - `PATCH /v1/platform/admins/:id/status` — `@PlatformRoles('superadmin')` — Activate / deactivate a platform administrator (audited).
 
+### Access Control & Stopgap Attendance Endpoints (`/v1/access/*` & `/v1/attendance/*`)
+Guarded by `AuthGuard`, `TenantGuard`, and `RolesGuard`:
+
+- `POST /v1/access/self-tap` — `@Roles('owner', 'manager', 'front_desk', 'member')` — Decoupled ingress transport adapter emitting `MemberCheckInAttemptEvent` to `CheckInService` (`method = 'self_tap_temporary'`, `verified_by = NULL`, 8-hour anti-spam sliding cooldown with 429 `SELF_CHECKIN_COOLDOWN_ACTIVE`, and dynamic gating via `temp_self_checkin_enabled`).
+- `POST /v1/attendance/tap` — `@Roles('owner', 'manager', 'front_desk')` — Staff-assisted or desk attendance logging with automatic lazy freeze settlement.
+- `GET /v1/attendance/history` — `@Roles('owner', 'manager', 'front_desk')` — Filtered historical check-in audit records (by `memberId`, `membershipId`, `branchId`).
+
+### SaaS Subscriptions & Platform Invoicing Endpoints (`/v1/subscription/*` & `/v1/platform/*`)
+
+- `GET /v1/subscription` — `AuthGuard`, `TenantGuard`, `RolesGuard('owner', 'manager')` — Returns gym's active SaaS subscription tier, plan limits, usage counts, and dunning restriction flags (`isRestricted`, `isSuspended`).
+- `GET /v1/subscription/invoices` — `AuthGuard`, `TenantGuard`, `RolesGuard('owner', 'manager')` — Lists platform tax invoices issued to the tenant with balance due and payment status.
+- `POST /v1/subscription/change` — `AuthGuard`, `TenantGuard`, `RolesGuard('owner')` — Requests plan upgrade or billing method alteration.
+- `GET /v1/platform/saas-plans` — `AuthGuard`, `PlatformAdminGuard`, `@PlatformRoles('superadmin', 'support', 'auditor')` — Lists active platform SaaS pricing tiers (Starter, Growth, Enterprise).
+- `POST /v1/platform/saas-plans` — `AuthGuard`, `PlatformAdminGuard`, `@PlatformRoles('superadmin')` — Creates new SaaS pricing tier with branch, member, and staff limits.
+- `POST /v1/platform/subscriptions` — `AuthGuard`, `PlatformAdminGuard`, `@PlatformRoles('superadmin')` — Provisions SaaS subscription for a tenant gym and generates initial gapless platform tax invoice (`GP-INV-000001`).
+- `POST /v1/platform/subscriptions/sweep` — `AuthGuard`, `PlatformAdminGuard`, `@PlatformRoles('superadmin')` — Executes automated dunning engine sweep (issues renewal invoices, evaluates past-due invoices, and transitions dunning statuses).
+- `GET /v1/platform/invoices` — `AuthGuard`, `PlatformAdminGuard`, `@PlatformRoles('superadmin', 'auditor')` — Lists all platform invoices across gyms with payment breakdown.
+- `POST /v1/platform/invoices/:id/payments` — `AuthGuard`, `PlatformAdminGuard`, `@PlatformRoles('superadmin')` — Records payment for a platform invoice and immediately lifts dunning restrictions if fully paid.
+
+### Transactional Notification Outbox Endpoints (`/v1/outbox/*` & `/v1/platform/outbox/*`)
+
+- `POST /v1/outbox/enqueue` — `AuthGuard`, `TenantGuard`, `RolesGuard('owner', 'manager')` — Enqueues transactional notification with unique deduplication key (`isDuplicate` idempotency check).
+- `GET /v1/outbox` — `AuthGuard`, `TenantGuard`, `RolesGuard('owner', 'manager')` — Inspects gym's notification outbox with status and channel filters.
+- `POST /v1/platform/outbox/dispatch` — `AuthGuard`, `PlatformAdminGuard`, `@PlatformRoles('superadmin')` — Background/on-demand queue worker dispatching pending notifications with exponential retry backoff and dead-letter queue (DLQ) after 5 attempts.
+- `GET /v1/platform/outbox` — `AuthGuard`, `PlatformAdminGuard`, `@PlatformRoles('superadmin', 'support')` — Global platform outbox queue monitoring.
+
+### Executive Analytics & Audit Reports Endpoints (`/v1/reports/*`)
+Guarded by `AuthGuard`, `TenantGuard`, and `RolesGuard('owner', 'manager')`:
+
+- `GET /v1/reports/anomalies` — Shift variances, complimentary adjustments, payment voids, and manual check-in overrides per staff member.
+- `GET /v1/reports/revenue` — Gross sales, 5% UAE VAT, net revenue, transaction count, and payment method breakdown (cash vs POS card).
+- `GET /v1/reports/checkins` — Check-in peak hour heatmap (24-hour distribution), allow/deny/override counts and rates, and transport method breakdown (including `self_tap_temporary`).
+- `GET /v1/reports/manual-adjustments` — Breakdown of complimentary extensions vs staff corrections with cumulative days added and justification logs.
+
 ---
 
-## 🧪 10. Verified End-to-End Test Suite (19 Stages)
+## 🧪 10. Verified End-to-End Test Suite (27 Stages)
 
-The complete multi-tenant platform architecture is validated against a 19-stage automated integration test suite (`apps/api/test-e2e-flow.cjs`) running against real Neon PostgreSQL:
+The complete multi-tenant platform architecture is validated against a 27-stage automated integration test suite (`apps/api/test-e2e-flow.cjs`) running against real Neon PostgreSQL:
 
-- **Step 0: DB Schema & Ledger Reset (Status: ✅ PASSED)**
-  - Verifies PostgreSQL `btree_gist` extension and establishes `no_overlapping_freezes` exclusion constraint on startup.
-  - Drops deprecated `payment_provider_config` column and auto-migrates missing columns (`metadata`, `currency`, `encrypted_secrets`).
-  - Resets `audit_logs` table identity for a pristine genesis block (`000...000`).
+- **Step 0: Verify DB Connection & Schema Constraint Assertion (Status: ✅ PASSED)**
+  - Asserts PostgreSQL `btree_gist` extension and `no_overlapping_freezes` exclusion constraint exist (established via versioned Drizzle migrations).
+  - Enforces zero runtime DDL (all schema definitions, constraints, and tables reside strictly in Drizzle migrations and `db:reset`).
+  - Read-only schema verification via `SchemaGuard` ensures production safety before boot.
 
 - **Step 1: Health & Meta Inspection (Status: ✅ PASSED)**
   - `/v1/health` returns status `ok` via active Neon pool connection.
@@ -586,9 +627,46 @@ The complete multi-tenant platform architecture is validated against a 19-stage 
   - Verifies double cancellation is idempotent and harmless.
   - Executes immediate cancellation; membership transitions to `cancelled` and rejects subsequent renewal attempts.
 
-- **Step 19: Final Cryptographic SHA-256 Audit Trail Verification (Status: ✅ PASSED)**
-  - Executes `POST /v1/gyms/audit-logs/verify` across all operations.
-  - 100% hash chain integrity verified across all stages with zero tampering.
+- **Step 19: Cryptographic Audit Trail Verification Mid-Point (Status: ✅ PASSED)**
+  - Executes `POST /v1/gyms/audit-logs/verify` across core commerce and attendance operations.
+  - 100% hash chain integrity verified with zero tampering.
+
+- **Step 20: Platform Superadmin Setup & SaaS Plans Discovery (Status: ✅ PASSED)**
+  - Bootstraps Platform Superadmin identity and role in `platform_admins`.
+  - Discovers seeded SaaS tier plans (`starter`, `growth`, `enterprise`) with tier quotas (`maxBranches`, `maxMembers`, `maxStaff`).
+
+- **Step 21: Subscription Provisioning & Gapless Sequential Platform Tax Invoicing (Status: ✅ PASSED)**
+  - Provisions Growth SaaS tier for tenant gym (`POST /v1/platform/subscriptions`).
+  - Generates platform tax invoice with atomic sequential numbering (`GP-INV-000001`), 5% UAE VAT calculation (799.00 + 39.95 = 838.95 AED), and verified supplier/buyer metadata.
+  - Tenant inspects active subscription and invoices (`GET /v1/subscription`, `GET /v1/subscription/invoices`).
+
+- **Step 22: Unsubscribed Gym Member Cap Enforcement (Status: ✅ PASSED)**
+  - Enforces Spec Section 4.2: Unsubscribed gyms are capped at 10 members (`MEMBER_LIMIT_UNSUBSCRIBED`).
+  - Successfully registers members 1 through 10.
+  - Rejects 11th member registration attempt with HTTP 403 `MEMBER_LIMIT_UNSUBSCRIBED`.
+
+- **Step 23: Dunning Engine State Transitions & Immediate Restriction Lifting (Status: ✅ PASSED)**
+  - Overdue invoice (+14 days) transitions subscription to `restricted` via `POST /v1/platform/subscriptions/sweep`.
+  - Asserts restricted status blocks member registration (`SUBSCRIPTION_RESTRICTED`) and freeze creation (`SUBSCRIPTION_RESTRICTED`).
+  - Records full invoice payment (`POST /v1/platform/invoices/:id/payments`); subscription status immediately restores to `active`, and operational restrictions are lifted without delay.
+
+- **Step 24: Dunning Engine Suspension (+30 Days Overdue) & Check-In Block (Status: ✅ PASSED)**
+  - Overdue invoice (+30 days) transitions subscription to `suspended`.
+  - Asserts turnstile and member self-tap access is strictly blocked with HTTP 403 `SUBSCRIPTION_SUSPENDED`.
+
+- **Step 25: Transactional Outbox (Deduplication, Dispatch, Backoff & DLQ) (Status: ✅ PASSED)**
+  - Enqueues notifications via `POST /v1/outbox/enqueue` with unique `dedupe_key` (idempotent duplicate prevention).
+  - Background queue worker (`POST /v1/platform/outbox/dispatch`) dispatches pending messages.
+  - Failed deliveries schedule exponential retry backoff; after 5 failed attempts, messages automatically route to the Dead-Letter Queue (`status: 'dead'`).
+
+- **Step 26: Executive Analytics & Reports Endpoints (Status: ✅ PASSED)**
+  - `GET /v1/reports/revenue` validates gross sales, 5% UAE VAT, net breakdown, and payment methods.
+  - `GET /v1/reports/checkins` validates peak-hour heatmap (24-hour distribution), allow/deny ratios, and transport methods (`self_tap_temporary`).
+  - `GET /v1/reports/manual-adjustments` audits unearned complimentary extensions vs correction days.
+
+- **Step 27: Final Cryptographic SHA-256 Audit Trail Verification (Status: ✅ PASSED)**
+  - Executes `POST /v1/gyms/audit-logs/verify` across all operations through Milestone 6.
+  - 100% hash chain integrity verified across all 27 stages with zero tampering.
 
 ---
 
@@ -654,38 +732,81 @@ NODE_ENV="development"
 ## 🎯 13. Roadmap & Next Steps
 
 ```
-[ Milestone 1: Foundation ] ──► [ Milestone 2: Core Commerce ] ──► [ Milestone 5: Retention & Freeze Engine ] ──► [ Milestone 3: Access & Check-In ]
-         ✅ COMPLETE                     ✅ COMPLETE                         ✅ COMPLETE                                  🚀 UP NEXT
-- Neon DB Schema & Migrations       - Members Module (Auto-Seq)         - PostgreSQL GIST Exclusion Constraint      - Ed25519 Rotating Pass Tokens
-- Better Auth Integration           - Plans & Freeze Policies           - 10 Eligibility Checks & Quota Math        - Software Desk Barcode/QR Scanner
-- TenantGuard & RolesGuard          - Inclusive Term Math & Ledger      - Date Math Preview (N = E - S + 1)         - Lazy Scan Freeze Settlement
-- Platform Superadmin Hierarchy     - Cashier Shifts & Blind Rec        - Desk Early Lift (Manager PIN Step-up)     - Fast Search & Ctrl+K Desk Access
-- ActiveGymGuard & 1-Gym Cap        - Desk Payments & 5% UAE VAT        - 30-Day Proof Retention & Purge Job        - Manual Override with Reason
-- SHA-256 Audit Trail & Scoping     - Gapless Sequential Invoices       - Payment-Backed Renewals & Cancellations   - Shift & Visit Capacity Reports
+[ Milestone 1: Foundation ] ──► [ Milestone 2: Core Commerce ] ──► [ Milestone 5: Retention & Freeze ] ──► [ Milestone 3 (Partial): Tap Attendance ] ──► [ Milestone 4: Shift Variance & Cash Audit ] ──► [ Milestone 6: SaaS Billing & Launch ]
+         ✅ COMPLETE                     ✅ COMPLETE                         ✅ COMPLETE                                  ✅ DELIVERED                                      ✅ COMPLETE                                         ✅ COMPLETE
+- Neon DB Schema & Migrations       - Members Module (Auto-Seq)         - PostgreSQL GIST Exclusion Constraint      - Tap-to-Mark Attendance (App / Desk)        - Manager Shift Variance Approvals                  - Platform SaaS Plans & Subscriptions
+- Better Auth Integration           - Plans & Freeze Policies           - 10 Eligibility Checks & Quota Math        - Lazy Scan Freeze Settlement                - Cash & Shift Variance Tolerances                  - Gapless Sequential Invoices (GP-INV)
+- TenantGuard & RolesGuard          - Inclusive Term Math & Ledger      - Date Math Preview (N = E - S + 1)         - Membership Status & Grace Term Checks      - Segregation of Duties (No Self-Approval)          - Automated Dunning Engine & Sweeper
+- Platform Superadmin Hierarchy     - Cashier Shifts & Blind Rec        - Desk Early Lift (Manager PIN Step-up)     - Attendance History Tracking                - Staff Cash Anomaly Audit Reports                  - Transactional Outbox (Backoff & DLQ)
+- ActiveGymGuard & 1-Gym Cap        - Desk Payments & 5% UAE VAT        - 30-Day Proof Retention & Purge Job        - TO DO LATER: Ed25519 Tokens & WebSockets   - Void & Override Frequency Tracking                - Unsubscribed Member Cap (10 Max)
+- SHA-256 Audit Trail & Scoping     - Gapless Sequential Invoices       - Payment-Backed Renewals & Cancellations                                                - Cryptographic Audit Trail Verification            - Executive Revenue & Heatmap Reports
 ```
 
-### Delivered Milestone 5 Architecture & Endpoints:
+### Delivered Architecture & Endpoints (Milestones 1, 2, 4, 5, 6 & Attendance):
 
-1. **The Full Freeze Engine (`apps/api/src/freezes/`):**
+1. **Cash Control, Shift Variance & Anomaly Audit (`apps/api/src/shifts/`, `apps/api/src/reports/`):**
+   - **Cashier Shift Lifecycle (`POST /v1/shifts/open`, `GET /v1/shifts/current`, `GET /v1/shifts`):** Front desk opens shift with opening float; all desk payments associate with active shift.
+   - **Blind Register Closeout (`POST /v1/shifts/:id/close`):** Cashier performs blind physical count without expected amounts revealed. Server calculates `varianceMinor = countedCash - expectedCash`. Automatically tags status as `closed` if within gym tolerance, or `variance_pending` if exceeding tolerance.
+   - **Manager Variance Approval (`POST /v1/shifts/:id/approve`):** Owner/Manager step-up approval with required justification notes. Enforces segregation of duties (`SELF_APPROVAL_PROHIBITED`: cashiers cannot approve their own shift variance).
+   - **Staff Cash & Anomaly Audit Reports (`GET /v1/reports/anomalies`):** Aggregates and correlates the 4 primary cashier fraud vectors:
+     1. Unapproved and high shift drawer variances.
+     2. Complimentary membership extensions (unearned free time fraud vector).
+     3. Payment voids and refunds.
+     4. Manual check-in overrides.
+     Generates per-staff anomaly profiles, risk scores, and flags (`UNAPPROVED_VARIANCE_PENDING`, `HIGH_DRAWER_VARIANCE`, `FREQUENT_COMPLIMENTARY_GRANTS`, `FREQUENT_PAYMENT_VOIDS`, `HIGH_CHECK_IN_OVERRIDES`).
+
+2. **Tap-to-Mark Attendance (`apps/api/src/attendance/`):**
+   - **Tap Attendance Check-In (`POST /v1/attendance/tap`):** Lightweight attendance tracking callable from member mobile app or front desk.
+   - **Lazy Freeze Settlement Integration:** Executes `settleDueFreezesForMembership(gymId, membershipId, today)` prior to granting admission.
+   - **Access Eligibility Enforcement:**
+     - Blocks frozen memberships with `MEMBERSHIP_FROZEN` (`400 Bad Request`).
+     - Blocks cancelled memberships with `MEMBERSHIP_CANCELLED`.
+     - Blocks pending payment memberships with `MEMBERSHIP_PAYMENT_PENDING`.
+     - Blocks unstarted terms with `MEMBERSHIP_NOT_STARTED`.
+     - Enforces plan grace days before rejecting with `MEMBERSHIP_EXPIRED`.
+     - Enforces single-branch access limits with `BRANCH_ACCESS_DENIED`.
+   - **Attendance History (`GET /v1/attendance/history`):** Paginated tenant check-in history filtered by `memberId`, `membershipId`, or `branchId`.
+
+3. **The Full Freeze Engine (`apps/api/src/freezes/`):**
    - **PostgreSQL GIST Exclusion Constraint (`no_overlapping_freezes`):** Enforces Rule 9 at the database kernel level using `btree_gist`: `EXCLUDE USING gist (membership_id WITH =, daterange(start_date, (end_date + integer '1'), '[]') WITH &&) WHERE (status IN ('pending', 'scheduled', 'active'))`. Prevents direct overlaps and back-to-back freezes concurrently; maps `23P01`/`23505` to `ConflictException('FREEZE_OVERLAP')`.
-   - **10-Step Eligibility Check (`GET /v1/memberships/:id/freeze-eligibility`):** Evaluates all 10 eligibility rules (policy enabled, membership status, balance check, notice period, minimum duration, remaining days quota, occurrence limit, term bounds, non-adjacent overlap check, proof requirement).
-   - **Quota Counting Engine:** Evaluates `cycle_basis: 'anniversary_year'` vs `'membership_term'`. Accurately counts days charged for `completed` and `early_lifted`, and requested days for `pending`, `scheduled`, and `active`. Excludes `cancelled` and `rejected` from both days and occurrences.
+   - **10-Step Eligibility Check (`GET /v1/memberships/:id/freeze-eligibility`):** Evaluates all 10 eligibility rules.
+   - **Quota Counting Engine:** Evaluates `cycle_basis: 'anniversary_year'` vs `'membership_term'`.
    - **Strict No-Backdating & Role-Gated Waivers:** Start dates in the past are unconditionally rejected (`FREEZE_START_IN_PAST`). Notice waivers are strictly restricted to `owner` and `manager` roles with audit trail recording.
-   - **Segregation of Duties & Anti-Staleness:** Re-evaluates all eligibility checks upon approval. Rejects stale approvals where start date has elapsed (`APPROVAL_STALE`). Strictly prohibits self-approval of freeze requests (`SELF_APPROVAL_PROHIBITED`).
-   - **Inclusive Date Math Preview (`POST /v1/memberships/:id/freezes/preview`):** Computes $N = E - S + 1$, minimum early return charge $\min(N, min\_days)$, projected new end date, and fee in minor units.
-   - **Idempotent Freeze Submission (`POST /v1/memberships/:id/freezes`):** Snapshots policy terms; transitions membership status to `frozen` immediately if $start\_date \le today$, else `scheduled` or `pending_review`.
-   - **Desk Early Lift with Step-up PIN (`POST /v1/freezes/:id/lift`):** Manager/Owner or Front Desk with manager PIN step-up; server enforces `lifted_on = today`. Calculates $days\_charged = \min(N, \max(days\_used, min\_days))$, restores membership to `active`, updates end date via `membership_adjustments` (`kind: 'freeze_early_lift'`), and returns unused days to quota. Protected against double-lifting via `adjustment_once_per_freeze` unique index and status check. PIN is never logged.
-   - **Supporting Proof Storage & 30-Day Purge (`POST /v1/freezes/:id/proofs`, `POST /v1/freezes/purge-proofs`):** Restricted to `owner` and `manager`. Automatically schedules auto-purge (`delete_after: today + 30`) and purges expired proofs with audit logging.
-   - **Batch Daily Settlement & Lazy Scan Settlement (`POST /v1/freezes/settle-due`, `settleDueFreezesForMembership`):** Automatically activates due freezes, completes ended freezes (restoring membership and adding freeze ledger extension), and expires stale pending requests.
+   - **Segregation of Duties & Anti-Staleness:** Re-evaluates all eligibility checks upon approval. Rejects stale approvals (`APPROVAL_STALE`) and prohibits self-approval (`SELF_APPROVAL_PROHIBITED`).
+   - **Desk Early Lift with Step-up PIN (`POST /v1/freezes/:id/lift`):** Manager/Owner or Front Desk with manager PIN step-up; server enforces `lifted_on = today`. Protected against double-lifting via `adjustment_once_per_freeze` unique index. PIN is never logged.
+   - **Supporting Proof Storage & 30-Day Purge (`POST /v1/freezes/:id/proofs`, `POST /v1/freezes/purge-proofs`):** Automatically schedules auto-purge (`delete_after: today + 30`) and purges expired proofs.
+   - **Batch Daily Settlement & Lazy Scan Settlement (`POST /v1/freezes/settle-due`, `settleDueFreezesForMembership`):** Automatically activates due freezes, completes ended freezes, and expires stale pending requests.
    - **Live Freeze Safeguard on Member Archiving:** Blocks `POST /v1/members/:id/archive` with `LIVE_FREEZE_ACTIVE` if an active freeze is live.
 
-2. **Membership Renewals & Cancellation (`apps/api/src/memberships/`):**
-   - **Payment-Backed Renewal (`POST /v1/memberships/:id/renew`):** Atomic desk sale transaction generating payment record, sequential tax invoice, and `membership_adjustments` row linking `payment_id` (preventing unearned free time). Preserves `status: 'frozen'` if membership is currently frozen.
-   - **Notice-Period & Immediate Cancellation (`POST /v1/memberships/:id/cancel`):** Supports scheduled cancellation with `cancelEffectiveDate` (membership stays active/usable until effective date) and immediate cancellation. Idempotent and harmless duplicate handling; blocks freeze requests during notice.
-   - **Optimistic Concurrency Control:** Guards all membership mutations with `WHERE version = expectedVersion`, rejecting concurrent updates with `VERSION_CONFLICT`.
+4. **Membership Renewals & Cancellation (`apps/api/src/memberships/`):**
+   - **Payment-Backed Renewal (`POST /v1/memberships/:id/renew`):** Atomic desk sale transaction generating payment record, sequential tax invoice, and `membership_adjustments` row linking `payment_id`. Preserves `status: 'frozen'` if membership is currently frozen.
+   - **Notice-Period & Immediate Cancellation (`POST /v1/memberships/:id/cancel`):** Supports scheduled cancellation with `cancelEffectiveDate` (membership stays active/usable until effective date) and immediate cancellation.
 
-3. **Next Steps (Milestone 3: Access Control & Desk Check-In):**
-   - **Ed25519 Dynamic Member Pass Tokens:** Generate time-limited (45-second TTL) cryptographically signed QR tokens (`POST /v1/me/pass-token`) with replay prevention.
-   - **Software Desk Scanner Check-In (`POST /v1/access/verify`):** Scan verification via USB/Bluetooth HID scanner or webcam, integrating lazy scan freeze settlement (`settleDueFreezesForMembership`).
-   - **Fast Member Search & Manual Check-In Override:** Fast Ctrl+K search (`GET /v1/members/search`) and manual check-in with mandatory audit reason (`POST /v1/access/manual`).
-   - **Capacity Tracking & Daily Attendance Logs:** Active gym visit logging and branch capacity metrics.
+---
+
+### ⏳ TO DO LATER (Deferred from Milestone 3):
+- **Ed25519 Dynamic Member Pass Tokens:** Generate time-limited (45-second TTL) cryptographically signed QR tokens (`POST /v1/me/pass-token`) with replay prevention using unlogged PostgreSQL `used_pass_tokens`.
+- **WebSocket Real-Time Scanner Gateway:** Socket.IO audio-visual desk banners (Green / Amber / Red) with branch-isolated rooms.
+- **Physical Turnstile Hardware Relays:** IoT bridge agents (ZKTeco / Hikvision) — deferred to Phase 2.
+- **📱 Mobile App Attendance Logger UI/UX Semantics (React Native / Expo Backlog):**
+  - **Component Styling & Semantics:** Design as a lightweight workout/attendance logger labeled *"Mark Today's Visit"* or *"Log Workout"*. Strictly prohibited from being labeled as a *"Digital Key"* or *"Door Unlocker"*.
+  - **State & Feedback:** On tap, triggers native haptic feedback (`Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success)`), updates the member's monthly streak calendar in local/remote state, and transitions the button to disabled state displaying *"Visit Logged for Today"*.
+
+---
+
+### 🚀 Delivered: Milestone 6 (SaaS Subscriptions, Outbox & Executive Analytics)
+1. **GymPulse B2B SaaS Subscriptions & Invoicing (`apps/api/src/subscriptions/`):**
+   - Platform pricing tiers (`saas_plans`): Starter (399 AED/mo), Growth (799 AED/mo), Enterprise (1499 AED/mo).
+   - Tenant subscriptions (`gym_subscriptions`) with gapless sequential UAE tax invoicing (`GP-INV-000001`) via atomic counter increments.
+   - Unsubscribed member cap enforced: non-subscribed gyms are strictly capped at 10 members (`MEMBER_LIMIT_UNSUBSCRIBED`).
+   - Automated dunning engine (`POST /v1/platform/subscriptions/sweep`): renewal invoices (-14 days), `past_due` (due date passed), `restricted` (+14 days past due; member registration, payment links, and freezes blocked), and `suspended` (+30 days past due; turnstiles and check-ins blocked).
+   - Payment recording (`POST /v1/platform/invoices/:id/payments`) immediately clears restrictions and restores active status.
+2. **Transactional Outbox Worker (`apps/api/src/outbox/`):**
+   - Atomic notification enqueuing with deduplication keys (`dedupe_key`).
+   - Background dispatcher (`POST /v1/platform/outbox/dispatch`) routing to push, SMS, WhatsApp, and email adapters.
+   - Exponential retry backoff on failures, routing to Dead-Letter Queue (`status: 'dead'`) upon reaching 5 attempts.
+3. **Executive Analytics & Reporting (`apps/api/src/reports/`):**
+   - `GET /v1/reports/revenue`: Gross sales, 5% UAE VAT, net sales, and payment method breakdown.
+   - `GET /v1/reports/checkins`: Peak hourly heatmap distribution (24-hour), allow/deny ratios, and transport methods.
+   - `GET /v1/reports/manual-adjustments`: Audit of unearned complimentary extensions vs system correction days per staff member.
+

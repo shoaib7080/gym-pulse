@@ -13,6 +13,8 @@ import {
   type OpenShiftInput,
   closeShiftSchema,
   type CloseShiftInput,
+  approveVarianceSchema,
+  type ApproveVarianceInput,
 } from '@gympulse/shared';
 import { AuditService } from '../common/audit/audit.service';
 import { scopeEntityToGym, scopeToGym } from '../common/tenant/tenant-scope.helper';
@@ -184,10 +186,23 @@ export class ShiftsService {
     const countedCashMinor = Number(input.countedCashMinor);
     const varianceMinor = countedCashMinor - expectedCashMinor;
 
+    const gym = await this.db.query.gyms.findFirst({
+      where: eq(gyms.id, gymId),
+    });
+    const toleranceMinor = (gym?.settings as any)?.cashToleranceMinor ?? 0;
+    const requiresApproval = Math.abs(varianceMinor) > toleranceMinor;
+    const finalStatus = requiresApproval ? 'variance_pending' : 'closed';
+
     const [closedShift] = await this.db
       .update(shifts)
       .set({
+        closedBy: userId,
         closedAt: new Date(),
+        cashSalesMinor,
+        expectedCashMinor,
+        countedCashMinor,
+        varianceMinor,
+        status: finalStatus,
       })
       .where(scopeEntityToGym(shifts, gymId, shiftId))
       .returning();
@@ -204,6 +219,8 @@ export class ShiftsService {
         expectedCashMinor,
         countedCashMinor,
         varianceMinor,
+        status: finalStatus,
+        requiresApproval,
         notes: input.notes ?? null,
       },
     });
@@ -217,7 +234,137 @@ export class ShiftsService {
         countedCashMinor,
         varianceMinor,
         hasDiscrepancy: varianceMinor !== 0,
+        requiresApproval,
+        status: finalStatus,
       },
+    };
+  }
+
+  /**
+   * Approve a shift closeout variance (Owner or Manager only)
+   * Enforces:
+   * 1. Shift must be closed
+   * 2. Segregation of duties: Cashier cannot approve their own shift variance
+   * 3. Cryptographic audit trail logging
+   */
+  async approveShiftVariance(
+    gymId: string,
+    shiftId: string,
+    actorUserId: string,
+    actorRole: string,
+    rawInput: unknown,
+  ) {
+    const parseResult = approveVarianceSchema.safeParse(rawInput || {});
+    if (!parseResult.success) {
+      throw new BadRequestException({
+        code: 'VALIDATION_FAILED',
+        message: 'Invalid approval data',
+      });
+    }
+    const input: ApproveVarianceInput = parseResult.data;
+
+    const shift = await this.db.query.shifts.findFirst({
+      where: scopeEntityToGym(shifts, gymId, shiftId),
+    });
+
+    if (!shift) {
+      throw new NotFoundException({
+        code: 'RESOURCE_NOT_FOUND',
+        message: 'Shift not found',
+      });
+    }
+
+    if (!shift.closedAt) {
+      throw new BadRequestException({
+        code: 'SHIFT_NOT_CLOSED',
+        message: 'Cannot approve an open shift. Shift must be closed first.',
+      });
+    }
+
+    if (shift.status === 'approved') {
+      return {
+        shift,
+        message: 'Shift variance has already been approved',
+      };
+    }
+
+    // Spec Requirement: Segregation of duties - cashier cannot approve their own shift variance
+    if (shift.openedBy === actorUserId || shift.closedBy === actorUserId) {
+      throw new BadRequestException({
+        code: 'SELF_APPROVAL_PROHIBITED',
+        message: 'Staff cannot approve their own shift variance',
+      });
+    }
+
+    const [updatedShift] = await this.db
+      .update(shifts)
+      .set({
+        status: 'approved',
+        approvedBy: actorUserId,
+        approvedAt: new Date(),
+        approvalNotes: input.notes || null,
+      })
+      .where(scopeEntityToGym(shifts, gymId, shiftId))
+      .returning();
+
+    await this.auditService.log({
+      gymId,
+      actorUserId,
+      action: 'shift.variance_approved',
+      entityType: 'shift',
+      entityId: shift.id,
+      payload: {
+        varianceMinor: shift.varianceMinor,
+        approvedBy: actorUserId,
+        authorizingRole: actorRole,
+        notes: input.notes || null,
+      },
+    });
+
+    return {
+      shift: updatedShift,
+      approval: {
+        approvedBy: actorUserId,
+        approvedAt: updatedShift.approvedAt,
+        notes: input.notes || null,
+      },
+    };
+  }
+
+  /**
+   * List shifts for gym with filters
+   */
+  async listShifts(
+    gymId: string,
+    options: {
+      branchId?: string;
+      status?: string;
+      openedBy?: string;
+      limit?: number;
+      offset?: number;
+    } = {},
+  ) {
+    const conditions = [eq(shifts.gymId, gymId)];
+    if (options.branchId) {
+      conditions.push(eq(shifts.branchId, options.branchId));
+    }
+    if (options.status) {
+      conditions.push(eq(shifts.status, options.status as any));
+    }
+    if (options.openedBy) {
+      conditions.push(eq(shifts.openedBy, options.openedBy));
+    }
+
+    const items = await this.db.query.shifts.findMany({
+      where: and(...conditions),
+      orderBy: [desc(shifts.openedAt)],
+      limit: options.limit ?? 50,
+      offset: options.offset ?? 0,
+    });
+
+    return {
+      items,
+      total: items.length,
     };
   }
 

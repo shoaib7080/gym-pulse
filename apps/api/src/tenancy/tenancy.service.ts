@@ -311,7 +311,7 @@ export class TenancyService {
   }
 
   /**
-   * Assign or update a staff member for this gym
+   * Assign or update a staff member for this gym (Accepts userId or email)
    */
   async assignStaff(gymId: string, rawInput: unknown, actorUserId?: string) {
     const parseResult = assignStaffSchema.safeParse(rawInput);
@@ -330,17 +330,27 @@ export class TenancyService {
 
     const input: AssignStaffInput = parseResult.data;
 
-    // Check user existence
-    const authUser = await this.db.query.authUsers.findFirst({
-      where: eq(authUsers.id, input.userId),
-    });
+    // Check user existence by userId or email
+    let authUser = input.userId
+      ? await this.db.query.authUsers.findFirst({
+          where: eq(authUsers.id, input.userId),
+        })
+      : null;
+
+    if (!authUser && input.email) {
+      authUser = await this.db.query.authUsers.findFirst({
+        where: eq(authUsers.email, input.email),
+      });
+    }
 
     if (!authUser) {
       throw new BadRequestException({
         code: 'RESOURCE_NOT_FOUND',
-        message: `User with ID '${input.userId}' not found in authentication system`,
+        message: `User '${input.userId || input.email}' not found in authentication system`,
       });
     }
+
+    const resolvedUserId = authUser.id;
 
     // Verify branch existence if selected
     if (input.branchScope === 'selected' && input.branchIds.length > 0) {
@@ -362,22 +372,19 @@ export class TenancyService {
 
     const result = await this.db.transaction(async (tx) => {
       // Ensure target user exists in users table with UUID
-      const isTargetUuid = isUuidString(input.userId);
+      const isTargetUuid = isUuidString(resolvedUserId);
       let domainUser = await tx.query.users.findFirst({
-        where: isTargetUuid ? eq(users.id, input.userId) : eq(users.authUserId, input.userId),
+        where: isTargetUuid ? eq(users.id, resolvedUserId) : eq(users.authUserId, resolvedUserId),
       });
 
       if (!domainUser) {
-        const authUser = await tx.query.authUsers.findFirst({
-          where: eq(authUsers.id, input.userId),
-        });
         const [created] = await tx
           .insert(users)
           .values({
-            authUserId: authUser?.id ?? input.userId,
-            email: authUser?.email,
-            fullName: authUser?.name || 'Staff Member',
-            nameSearch: (authUser?.name || 'Staff Member').toLowerCase(),
+            authUserId: authUser.id,
+            email: authUser.email,
+            fullName: authUser.name || 'Staff Member',
+            nameSearch: (authUser.name || 'Staff Member').toLowerCase(),
             status: 'active',
           })
           .returning();
@@ -444,7 +451,7 @@ export class TenancyService {
       return {
         assignmentId,
         gymId,
-        userId: input.userId,
+        userId: resolvedUserId,
         role: input.role,
         branchScope: input.branchScope,
         branchIds: input.branchScope === 'selected' ? input.branchIds : [],
@@ -459,7 +466,7 @@ export class TenancyService {
       entityType: 'staff_assignment',
       entityId: result.assignmentId,
       payload: {
-        targetUserId: input.userId,
+        targetUserId: resolvedUserId,
         role: input.role,
         branchScope: input.branchScope,
       },
