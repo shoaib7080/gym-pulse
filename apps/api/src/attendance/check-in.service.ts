@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   HttpException,
   HttpStatus,
@@ -47,6 +48,59 @@ export class CheckInService implements ICheckInService {
   ) {}
 
   /**
+   * Helper to persist denied check-in attempts to check_ins table and audit logs before throwing
+   */
+  private async recordDeniedCheckIn(
+    event: MemberCheckInAttemptEvent,
+    branchId: string | undefined,
+    memberId: string | undefined,
+    membershipId: string | undefined,
+    denyReason: string,
+    message: string,
+    errToThrow: Error,
+  ): Promise<never> {
+    if (branchId) {
+      try {
+        const [inserted] = await this.db
+          .insert(checkIns)
+          .values({
+            gymId: event.gymId,
+            branchId,
+            memberId: memberId || null,
+            membershipId: membershipId || null,
+            result: 'denied',
+            denyReason,
+            method: event.method,
+            deviceId: event.deviceId || null,
+            verifiedBy: event.method === 'self_tap_temporary' ? null : toUuidOrNull(event.actorUserId),
+            createdAt: new Date(),
+          })
+          .returning();
+
+        await this.auditService.log({
+          gymId: event.gymId,
+          actorUserId: event.method === 'self_tap_temporary' ? null : (event.actorUserId ?? null),
+          action: 'attendance.denied',
+          entityType: 'check_in',
+          entityId: inserted.id,
+          payload: {
+            method: event.method,
+            memberId,
+            membershipId,
+            denyReason,
+            reasonMessage: message,
+          },
+        });
+      } catch (logErr: any) {
+        // Do not crash primary rejection flow if logging encounters a secondary DB failure
+        console.error('Failed to log denied check-in attempt:', logErr?.message);
+      }
+    }
+
+    throw errToThrow;
+  }
+
+  /**
    * Process incoming check-in attempt via abstract domain interface
    */
   async processCheckIn(
@@ -79,7 +133,22 @@ export class CheckInService implements ICheckInService {
       });
     }
 
+    // Desk tap verification: require on-duty staff actor for all non-self-tap check-ins
+    const isSelfTap = event.method === 'self_tap_temporary';
+    if (!isSelfTap && !event.actorUserId) {
+      throw new ForbiddenException({
+        code: 'STAFF_VERIFICATION_REQUIRED',
+        message: 'Desk attendance scanning must be verified by on-duty staff',
+      });
+    }
+
     const today = getGymLocalDate(gym.timezone || 'Asia/Dubai');
+
+    // Resolve default branch fallback
+    const defaultBranch = await this.db.query.branches.findFirst({
+      where: eq(branches.gymId, event.gymId),
+    });
+    const defaultBranchId = defaultBranch?.id;
 
     // 2. Resolve Member and Membership
     let membership: any = null;
@@ -123,10 +192,11 @@ export class CheckInService implements ICheckInService {
     }
 
     const resolvedMemberId = membership.memberId;
+    let targetBranchId = event.branchId || membership.branchId || defaultBranchId;
 
-    // 3. Sliding Anti-Spam Cooldown Enforcement (Spec Requirement 2b)
-    // Enforce 6-to-12 hour cooldown (default 8 hours) for self-tap
-    if (event.method === 'self_tap_temporary') {
+    // 3. Duplicate-Tap Protection & Anti-Spam Cooldown Enforcement
+    if (isSelfTap) {
+      // Enforce 6-to-12 hour cooldown (default 8 hours) for self-tap
       const cooldownHours =
         typeof gymSettings.selfCheckInCooldownHours === 'number'
           ? Math.max(6, Math.min(12, gymSettings.selfCheckInCooldownHours))
@@ -152,14 +222,51 @@ export class CheckInService implements ICheckInService {
           Math.ceil((cooldownWindowMs - timeElapsedMs) / (60 * 1000)),
         );
 
-        throw new HttpException(
-          {
-            code: 'SELF_CHECKIN_COOLDOWN_ACTIVE',
-            message: `Attendance already recorded. Cooldown active for another ${remainingMinutes} minutes.`,
-            cooldownRemainingMinutes: remainingMinutes,
-            lastCheckInAt: recentCheckIn.createdAt,
-          },
-          HttpStatus.TOO_MANY_REQUESTS,
+        return await this.recordDeniedCheckIn(
+          event,
+          targetBranchId,
+          resolvedMemberId,
+          membership.id,
+          'SELF_CHECKIN_COOLDOWN_ACTIVE',
+          `Attendance already recorded. Cooldown active for another ${remainingMinutes} minutes.`,
+          new HttpException(
+            {
+              code: 'SELF_CHECKIN_COOLDOWN_ACTIVE',
+              message: `Attendance already recorded. Cooldown active for another ${remainingMinutes} minutes.`,
+              cooldownRemainingMinutes: remainingMinutes,
+              lastCheckInAt: recentCheckIn.createdAt,
+            },
+            HttpStatus.TOO_MANY_REQUESTS,
+          ),
+        );
+      }
+    } else {
+      // Rapid duplicate-tap protection for desk check-ins (prevents accidental double-scans within 120s)
+      const duplicateThreshold = new Date(Date.now() - 120 * 1000);
+      const recentDeskTap = await this.db.query.checkIns.findFirst({
+        where: and(
+          eq(checkIns.gymId, event.gymId),
+          eq(checkIns.memberId, resolvedMemberId),
+          eq(checkIns.result, 'allowed'),
+          gte(checkIns.createdAt, duplicateThreshold),
+        ),
+        orderBy: [desc(checkIns.createdAt)],
+      });
+
+      if (recentDeskTap) {
+        const timeElapsedSec = Math.max(1, Math.round((Date.now() - new Date(recentDeskTap.createdAt).getTime()) / 1000));
+        return await this.recordDeniedCheckIn(
+          event,
+          targetBranchId,
+          resolvedMemberId,
+          membership.id,
+          'DUPLICATE_TAP',
+          `Attendance was already recorded for this member ${timeElapsedSec} seconds ago. Duplicate tap prevented.`,
+          new ConflictException({
+            code: 'DUPLICATE_TAP',
+            message: `Attendance was already recorded for this member ${timeElapsedSec} seconds ago. Duplicate tap prevented.`,
+            lastCheckInAt: recentDeskTap.createdAt,
+          }),
         );
       }
     }
@@ -185,21 +292,37 @@ export class CheckInService implements ICheckInService {
 
     // 5. Subscription Status Verification (Spec Requirement 2a)
     // Strictly active required; frozen or expired must be rejected with RFC 7807 problem details
-    const isSelfTap = event.method === 'self_tap_temporary';
     if (membership.status === 'frozen') {
-      throw new BadRequestException({
-        code: isSelfTap ? 'FREEZE_ACTIVE' : 'MEMBERSHIP_FROZEN',
-        reasons: ['FREEZE_ACTIVE', 'MEMBERSHIP_FROZEN'],
-        message: 'Membership is currently frozen',
-      });
+      const denyCode = isSelfTap ? 'FREEZE_ACTIVE' : 'MEMBERSHIP_FROZEN';
+      return await this.recordDeniedCheckIn(
+        event,
+        targetBranchId,
+        resolvedMemberId,
+        membership.id,
+        denyCode,
+        'Membership is currently frozen',
+        new BadRequestException({
+          code: denyCode,
+          reasons: ['FREEZE_ACTIVE', 'MEMBERSHIP_FROZEN'],
+          message: 'Membership is currently frozen',
+        }),
+      );
     }
 
     if (membership.status !== 'active') {
-      throw new BadRequestException({
-        code: 'MEMBERSHIP_NOT_ELIGIBLE',
-        reasons: ['MEMBERSHIP_NOT_ELIGIBLE', `STATUS_${membership.status.toUpperCase()}`],
-        message: `Member subscription is not active (current status: ${membership.status})`,
-      });
+      return await this.recordDeniedCheckIn(
+        event,
+        targetBranchId,
+        resolvedMemberId,
+        membership.id,
+        'MEMBERSHIP_NOT_ELIGIBLE',
+        `Member subscription is not active (current status: ${membership.status})`,
+        new BadRequestException({
+          code: 'MEMBERSHIP_NOT_ELIGIBLE',
+          reasons: ['MEMBERSHIP_NOT_ELIGIBLE', `STATUS_${membership.status.toUpperCase()}`],
+          message: `Member subscription is not active (current status: ${membership.status})`,
+        }),
+      );
     }
 
     // 6. Term Date Validity & Grace Period Check
@@ -212,37 +335,53 @@ export class CheckInService implements ICheckInService {
       graceDays > 0 ? addDays(membership.endDate, graceDays) : membership.endDate;
 
     if (today < membership.startDate) {
-      throw new BadRequestException({
-        code: 'MEMBERSHIP_NOT_ELIGIBLE',
-        reasons: ['MEMBERSHIP_NOT_ELIGIBLE', 'MEMBERSHIP_NOT_STARTED'],
-        message: `Membership term begins on ${membership.startDate}`,
-      });
+      return await this.recordDeniedCheckIn(
+        event,
+        targetBranchId,
+        resolvedMemberId,
+        membership.id,
+        'MEMBERSHIP_NOT_STARTED',
+        `Membership term begins on ${membership.startDate}`,
+        new BadRequestException({
+          code: 'MEMBERSHIP_NOT_ELIGIBLE',
+          reasons: ['MEMBERSHIP_NOT_ELIGIBLE', 'MEMBERSHIP_NOT_STARTED'],
+          message: `Membership term begins on ${membership.startDate}`,
+        }),
+      );
     }
 
     if (today > finalAllowedDate) {
-      throw new BadRequestException({
-        code: 'MEMBERSHIP_NOT_ELIGIBLE',
-        reasons: ['MEMBERSHIP_NOT_ELIGIBLE', 'MEMBERSHIP_EXPIRED'],
-        message: `Membership expired on ${membership.endDate}`,
-      });
+      return await this.recordDeniedCheckIn(
+        event,
+        targetBranchId,
+        resolvedMemberId,
+        membership.id,
+        'MEMBERSHIP_EXPIRED',
+        `Membership expired on ${membership.endDate}`,
+        new BadRequestException({
+          code: 'MEMBERSHIP_NOT_ELIGIBLE',
+          reasons: ['MEMBERSHIP_NOT_ELIGIBLE', 'MEMBERSHIP_EXPIRED'],
+          message: `Membership expired on ${membership.endDate}`,
+        }),
+      );
     }
 
     // 7. Resolve Target Branch & Single Branch Access Rule
-    let targetBranchId = event.branchId || membership.branchId;
-    if (!targetBranchId) {
-      const defaultBranch = await this.db.query.branches.findFirst({
-        where: eq(branches.gymId, event.gymId),
-      });
-      targetBranchId = defaultBranch?.id;
-    }
-
     if (plan?.branchAccess === 'home_only' && membership.branchId && targetBranchId) {
       if (targetBranchId !== membership.branchId) {
-        throw new BadRequestException({
-          code: 'MEMBERSHIP_NOT_ELIGIBLE',
-          reasons: ['MEMBERSHIP_NOT_ELIGIBLE', 'CROSS_BRANCH_ACCESS_DENIED'],
-          message: 'Plan is restricted to member home branch',
-        });
+        return await this.recordDeniedCheckIn(
+          event,
+          targetBranchId,
+          resolvedMemberId,
+          membership.id,
+          'CROSS_BRANCH_ACCESS_DENIED',
+          'Plan is restricted to member home branch',
+          new BadRequestException({
+            code: 'MEMBERSHIP_NOT_ELIGIBLE',
+            reasons: ['MEMBERSHIP_NOT_ELIGIBLE', 'CROSS_BRANCH_ACCESS_DENIED'],
+            message: 'Plan is restricted to member home branch',
+          }),
+        );
       }
     }
 

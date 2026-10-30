@@ -1,4 +1,5 @@
-import { useState } from 'react';
+import { useState, useEffect, useCallback } from 'react';
+import { useAuth } from '../../context/AuthContext';
 import {
   Users,
   Activity,
@@ -8,655 +9,417 @@ import {
   Download,
   CheckCircle2,
   Clock,
-  UploadCloud,
+  Plus,
+  AlertTriangle,
+  Building2,
 } from '../ui/icons';
 
-interface MemberRecord {
+interface MemberEntity {
   id: string;
-  name: string;
-  initials: string;
-  tier: string;
-  tierCategory: 'vip' | 'standard' | 'trial' | 'flagged';
-  checkInTime: string;
-  locker: string;
-  passStatus: 'Verified' | 'Waiver Req.' | 'Badge Expired';
+  fullName: string;
+  phone: string;
+  email?: string | null;
+  memberNumber?: string;
+  gender?: string | null;
+  dateOfBirth?: string | null;
+  status?: string;
+  createdAt?: string;
 }
 
-const MEMBERS_DATA: MemberRecord[] = [
-  {
-    id: '#GP-98214',
-    name: 'Marcus Vance',
-    initials: 'MV',
-    tier: 'VIP Platinum',
-    tierCategory: 'vip',
-    checkInTime: '10:42 AM (38m ago)',
-    locker: '#L-084',
-    passStatus: 'Verified',
-  },
-  {
-    id: '#GP-74112',
-    name: 'Elena Rostova',
-    initials: 'ER',
-    tier: 'Standard Annual',
-    tierCategory: 'standard',
-    checkInTime: '11:05 AM (15m ago)',
-    locker: '#L-112',
-    passStatus: 'Verified',
-  },
-  {
-    id: '#GP-31290',
-    name: 'Devon Miller',
-    initials: 'DM',
-    tier: 'VIP Platinum',
-    tierCategory: 'vip',
-    checkInTime: '11:14 AM (6m ago)',
-    locker: '#L-019',
-    passStatus: 'Verified',
-  },
-  {
-    id: '#GP-11002',
-    name: 'Sophia Chen',
-    initials: 'SC',
-    tier: 'Free 7-Day Trial',
-    tierCategory: 'trial',
-    checkInTime: '11:18 AM (2m ago)',
-    locker: 'No Locker',
-    passStatus: 'Waiver Req.',
-  },
-  {
-    id: '#GP-88301',
-    name: 'Tariq Washington',
-    initials: 'TW',
-    tier: 'Standard Annual',
-    tierCategory: 'standard',
-    checkInTime: '11:19 AM (Just now)',
-    locker: '#L-042',
-    passStatus: 'Verified',
-  },
-  {
-    id: '#GP-78902',
-    name: 'Chloe Zhang',
-    initials: 'CZ',
-    tier: 'Standard Club',
-    tierCategory: 'flagged',
-    checkInTime: '11:22 AM (Pending)',
-    locker: 'Unassigned',
-    passStatus: 'Badge Expired',
-  },
-];
+interface BranchEntity {
+  id: string;
+  name: string;
+  code: string;
+  isMain: boolean;
+}
 
 export function OperationsView() {
-  const [activeFilter, setActiveFilter] = useState<'all' | 'vip' | 'standard' | 'trial' | 'flagged'>('all');
+  const { activeGym, apiFetch } = useAuth();
+
+  const [members, setMembers] = useState<MemberEntity[]>([]);
+  const [branches, setBranches] = useState<BranchEntity[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
 
-  const filteredMembers = MEMBERS_DATA.filter((m) => {
-    const matchesFilter = activeFilter === 'all' || m.tierCategory === activeFilter;
-    const matchesSearch =
-      m.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      m.id.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      m.locker.toLowerCase().includes(searchQuery.toLowerCase());
-    return matchesFilter && matchesSearch;
-  });
+  // Add Member Modal state
+  const [isAddModalOpen, setIsAddModalOpen] = useState(false);
+  const [newFullName, setNewFullName] = useState('');
+  const [newPhone, setNewPhone] = useState('');
+  const [newEmail, setNewEmail] = useState('');
+  const [newGender, setNewGender] = useState<'male' | 'female' | 'other'>('male');
+  const [selectedBranchId, setSelectedBranchId] = useState('');
+  const [isSubmittingMember, setIsSubmittingMember] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [actionSuccess, setActionSuccess] = useState<string | null>(null);
+
+  // Fetch real members and branches
+  const fetchOperationsData = useCallback(async () => {
+    setIsLoading(true);
+    try {
+      const queryParam = searchQuery.trim() ? `?search=${encodeURIComponent(searchQuery.trim())}` : '';
+      const [memRes, brRes] = await Promise.allSettled([
+        apiFetch(`/v1/members${queryParam}`),
+        apiFetch('/v1/branches'),
+      ]);
+
+      if (memRes.status === 'fulfilled' && memRes.value.ok) {
+        const data = await memRes.value.json();
+        const list: MemberEntity[] = Array.isArray(data) ? data : data?.data || [];
+        setMembers(list);
+      } else {
+        setMembers([]);
+      }
+
+      if (brRes.status === 'fulfilled' && brRes.value.ok) {
+        const brData = await brRes.value.json();
+        const brList: BranchEntity[] = Array.isArray(brData) ? brData : [];
+        setBranches(brList);
+        if (brList.length > 0 && !selectedBranchId) {
+          setSelectedBranchId(brList[0].id);
+        }
+      }
+    } catch (err) {
+      console.warn('Failed to fetch operations data:', err);
+    } finally {
+      setIsLoading(false);
+    }
+  }, [apiFetch, searchQuery, selectedBranchId]);
+
+  useEffect(() => {
+    fetchOperationsData();
+  }, [fetchOperationsData]);
+
+  // Handle Member Registration
+  const handleRegisterMember = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setActionError(null);
+    setActionSuccess(null);
+
+    if (!newFullName.trim() || !newPhone.trim()) {
+      setActionError('Full name and phone number in E.164 format (+971...) are required.');
+      return;
+    }
+
+    setIsSubmittingMember(true);
+    try {
+      const res = await apiFetch('/v1/members', {
+        method: 'POST',
+        body: JSON.stringify({
+          fullName: newFullName.trim(),
+          phone: newPhone.trim(),
+          email: newEmail.trim() || undefined,
+          gender: newGender,
+          homeBranchId: selectedBranchId || undefined,
+        }),
+      });
+
+      const data = await res.json();
+      if (res.ok) {
+        setActionSuccess(`Member "${newFullName}" registered successfully!`);
+        setNewFullName('');
+        setNewPhone('');
+        setNewEmail('');
+        setIsAddModalOpen(false);
+        fetchOperationsData();
+      } else {
+        setActionError(data?.message || 'Failed to create member record.');
+      }
+    } catch {
+      setActionError('Network error registering new member.');
+    } finally {
+      setIsSubmittingMember(false);
+    }
+  };
 
   return (
-    <div className="flex flex-col w-full pb-12">
-      {/* Secondary Horizontal Navigation / Operations Bar */}
-      <section className="sticky top-0 z-20 w-full bg-surface-container-low/95 backdrop-blur-md px-6 py-2.5 border-b border-outline-variant/30 shadow-xs">
-        <div className="flex flex-col xl:flex-row xl:items-center xl:justify-between gap-3">
-          <nav aria-label="Operations Tabs" className="flex items-center gap-1 overflow-x-auto no-scrollbar">
-            <button
-              type="button"
-              className="flex items-center gap-2 px-3.5 py-1.5 rounded-lg bg-surface-container text-on-surface text-xs font-semibold shadow-xs"
-            >
-              <span className="h-2 w-2 rounded-full bg-primary animate-pulse" />
-              <span>Overview & Operations</span>
-            </button>
-            <button
-              type="button"
-              className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-on-surface-variant hover:text-on-surface hover:bg-surface-container transition-colors text-xs font-medium"
-            >
-              <span>Membership Roster</span>
-              <span className="px-1.5 py-0.2 rounded-full bg-surface-container-high text-[10px] text-outline font-mono">
-                1,420
-              </span>
-            </button>
-            <button
-              type="button"
-              className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-on-surface-variant hover:text-on-surface hover:bg-surface-container transition-colors text-xs font-medium"
-            >
-              <span>Branch Telemetry</span>
-              <span className="px-1.5 py-0.2 rounded-full bg-surface-container-high text-[10px] text-outline">
-                3 Sites
-              </span>
-            </button>
-            <button
-              type="button"
-              className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-on-surface-variant hover:text-on-surface hover:bg-surface-container transition-colors text-xs font-medium"
-            >
-              <span>Compliance Audits</span>
-              <span className="px-1.5 py-0.2 rounded-full bg-tertiary-container/30 text-tertiary text-[10px] font-semibold flex items-center gap-1">
-                <span className="h-1.5 w-1.5 rounded-full bg-tertiary" />1 Action
-              </span>
-            </button>
-          </nav>
+    <div className="flex flex-col w-full pb-12 font-sans">
+      {/* Top Header */}
+      <div className="px-6 py-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-surface-container-low border-b border-outline-variant/30 shadow-sm">
+        <div>
+          <div className="flex items-center gap-1.5 text-[11px] uppercase tracking-widest text-outline font-semibold">
+            <span>Operations</span>
+            <span className="text-on-surface-variant font-bold">/</span>
+            <span className="text-primary font-bold">Member Registry</span>
+          </div>
+          <h1 className="text-xl font-bold text-on-surface font-display mt-0.5">
+            Member Intake &amp; Front-Desk Operations
+          </h1>
+        </div>
 
-          <div className="flex items-center gap-2 shrink-0">
-            <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-surface-container text-xs text-on-surface-variant border border-outline-variant/30">
-              <Clock className="w-3.5 h-3.5 text-secondary" />
-              <span>Today: Oct 26, 2026</span>
+        <button
+          type="button"
+          onClick={() => {
+            setIsAddModalOpen(true);
+            setActionError(null);
+          }}
+          className="flex items-center gap-2 px-4 py-2 rounded-lg bg-primary hover:bg-primary-hover active:bg-primary-active text-[#1f3700] text-xs font-bold shadow-md shadow-primary/20 transition-all cursor-pointer"
+        >
+          <Plus className="w-4 h-4" />
+          <span>Register New Member</span>
+        </button>
+      </div>
+
+      <div className="p-6 space-y-6">
+        {/* Status Alerts */}
+        {actionSuccess && (
+          <div className="p-3.5 rounded-lg bg-primary/10 border border-primary/30 flex items-center gap-2.5 text-xs text-primary animate-in fade-in">
+            <CheckCircle2 className="w-4 h-4 shrink-0" />
+            <span>{actionSuccess}</span>
+          </div>
+        )}
+
+        {/* Telemetry Summary Cards */}
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+          <div className="p-4 rounded-xl bg-[#131722] border border-white/[0.08] shadow-sm">
+            <div className="flex items-center justify-between text-slate-400 text-xs mb-1">
+              <span>Total Registered Members</span>
+              <Users className="w-4 h-4 text-primary" />
             </div>
+            <div className="text-2xl font-black text-white font-stat-metric">
+              {isLoading ? '...' : members.length}
+            </div>
+            <div className="text-[11px] text-slate-400 mt-0.5">
+              Active Facility Roster
+            </div>
+          </div>
 
-            <button
-              type="button"
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-primary-container text-on-primary-container text-xs font-bold hover:brightness-110 active:scale-95 transition-all shadow-xs cursor-pointer"
-            >
-              <Download className="w-3.5 h-3.5" />
-              <span>Daily Log</span>
-            </button>
+          <div className="p-4 rounded-xl bg-[#131722] border border-white/[0.08] shadow-sm">
+            <div className="flex items-center justify-between text-slate-400 text-xs mb-1">
+              <span>Branch Facilities</span>
+              <Building2 className="w-4 h-4 text-slate-400" />
+            </div>
+            <div className="text-2xl font-black text-white font-stat-metric">
+              {isLoading ? '...' : branches.length || 1}
+            </div>
+            <div className="text-[11px] text-slate-400 mt-0.5">
+              Available intake branches
+            </div>
+          </div>
+
+          <div className="p-4 rounded-xl bg-[#131722] border border-white/[0.08] shadow-sm">
+            <div className="flex items-center justify-between text-slate-400 text-xs mb-1">
+              <span>Access Control Protocol</span>
+              <ShieldCheck className="w-4 h-4 text-emerald-400" />
+            </div>
+            <div className="text-base font-bold text-emerald-400 mt-1">
+              Active &amp; Operational
+            </div>
+            <div className="text-[11px] text-slate-400 mt-0.5">
+              Real-time gate synchronization
+            </div>
           </div>
         </div>
-      </section>
 
-      {/* Main Content Flow */}
-      <div className="w-full max-w-[1720px] mx-auto p-6 flex flex-col gap-6 min-w-0">
-        {/* Operational KPI Ribbon */}
-        <section className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
-          {/* Metric 1: Total Active Members */}
-          <div className="rounded-2xl bg-surface-container-low border border-outline-variant/30 p-5 shadow-sm flex flex-col justify-between">
-            <div className="flex items-start justify-between">
-              <div>
-                <span className="text-[11px] font-bold text-on-surface-variant uppercase tracking-wider">
-                  Total Active Members
-                </span>
-                <div className="flex items-baseline gap-2 mt-1">
-                  <span className="text-3xl font-black text-on-surface font-stat-metric">1,420</span>
-                  <span className="text-xs font-bold text-primary flex items-center">
-                    ↑ +48
-                  </span>
-                </div>
-              </div>
-              <div className="p-2.5 rounded-xl bg-surface-container text-primary">
-                <Users className="w-5 h-5" />
-              </div>
-            </div>
-            <div className="mt-3">
-              <div className="flex items-center justify-between text-xs text-on-surface-variant">
-                <span>Monthly Growth</span>
-                <span className="font-semibold text-on-surface">96.2% Retention</span>
-              </div>
-              <div className="w-full bg-surface-container-highest h-1.5 rounded-full mt-1.5 overflow-hidden">
-                <div className="bg-primary h-full rounded-full" style={{ width: '96.2%' }} />
-              </div>
-            </div>
+        {/* Search & Action Bar */}
+        <div className="flex flex-col sm:flex-row items-center justify-between gap-4 p-4 rounded-xl bg-[#131722] border border-white/[0.08] shadow-sm">
+          <div className="relative w-full sm:w-80">
+            <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-outline pointer-events-none" />
+            <input
+              type="text"
+              placeholder="Search by name, phone, or ID..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="w-full bg-[#1A202C] text-on-surface placeholder:text-outline text-xs pl-9 pr-3 py-2 rounded-lg border border-white/[0.07] focus:border-primary focus:outline-none font-sans"
+            />
           </div>
 
-          {/* Metric 2: Live Occupancy */}
-          <div className="rounded-2xl bg-surface-container-low border border-outline-variant/30 p-5 shadow-sm flex flex-col justify-between">
-            <div className="flex items-start justify-between">
-              <div>
-                <div className="flex items-center gap-2">
-                  <span className="text-[11px] font-bold text-on-surface-variant uppercase tracking-wider">
-                    Current Occupancy
-                  </span>
-                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-secondary-container/20 text-secondary text-[10px] font-bold uppercase">
-                    <span className="h-1.5 w-1.5 rounded-full bg-secondary animate-ping" />
-                    Optimal
-                  </span>
-                </div>
-                <div className="flex items-baseline gap-2 mt-1">
-                  <span className="text-3xl font-black text-on-surface font-stat-metric">142</span>
-                  <span className="text-xs text-on-surface-variant">/ 210 Cap</span>
-                </div>
-              </div>
-              <div className="p-2.5 rounded-xl bg-surface-container text-secondary">
-                <Activity className="w-5 h-5" />
-              </div>
+          <button
+            type="button"
+            onClick={fetchOperationsData}
+            disabled={isLoading}
+            className="px-3.5 py-2 rounded-lg bg-[#1A202C] hover:bg-[#232a3b] border border-white/[0.08] text-xs font-bold text-on-surface transition-colors cursor-pointer"
+          >
+            Refresh Roster
+          </button>
+        </div>
+
+        {/* Main Member Roster Table or Empty State */}
+        <div className="rounded-xl bg-[#131722] border border-white/[0.08] p-6 shadow-md">
+          {isLoading ? (
+            <div className="py-12 text-center text-xs text-outline font-mono">
+              Loading member records from tenant database...
             </div>
-            <div className="mt-3">
-              <div className="flex items-center justify-between text-xs text-on-surface-variant">
-                <span>Headcount Velocity</span>
-                <span className="font-semibold text-secondary">67.6% Safe Load</span>
-              </div>
-              <div className="w-full bg-surface-container-highest h-1.5 rounded-full mt-1.5 overflow-hidden">
-                <div className="bg-secondary h-full rounded-full" style={{ width: '67.6%' }} />
-              </div>
-            </div>
-          </div>
-
-          {/* Metric 3: Compliance & Health */}
-          <div className="rounded-2xl bg-surface-container-low border border-outline-variant/30 p-5 shadow-sm flex flex-col justify-between">
-            <div className="flex items-start justify-between">
-              <div>
-                <div className="flex items-center gap-2">
-                  <span className="text-[11px] font-bold text-on-surface-variant uppercase tracking-wider">
-                    Facility Compliance
-                  </span>
-                  <span className="px-2 py-0.5 rounded-full bg-tertiary-container/25 text-tertiary text-[10px] font-bold">
-                    Action Req.
-                  </span>
-                </div>
-                <div className="flex items-baseline gap-2 mt-1">
-                  <span className="text-3xl font-black text-on-surface font-stat-metric">
-                    3 <span className="text-sm text-outline font-normal">of 4</span>
-                  </span>
-                  <span className="text-xs font-semibold text-tertiary">Review Active</span>
-                </div>
-              </div>
-              <div className="p-2.5 rounded-xl bg-surface-container text-tertiary">
-                <ShieldCheck className="w-5 h-5" />
-              </div>
-            </div>
-            <div className="mt-3">
-              <div className="flex items-center justify-between text-xs text-on-surface-variant">
-                <span>Audit Cycle</span>
-                <span className="font-semibold text-on-surface">Q4 Institutional</span>
-              </div>
-              <div className="w-full bg-surface-container-highest h-1.5 rounded-full mt-1.5 overflow-hidden flex gap-0.5">
-                <div className="bg-primary h-full w-1/4 rounded-xs" />
-                <div className="bg-primary h-full w-1/4 rounded-xs" />
-                <div className="bg-primary h-full w-1/4 rounded-xs" />
-                <div className="bg-tertiary h-full w-1/4 rounded-xs animate-pulse" />
-              </div>
-            </div>
-          </div>
-
-          {/* Metric 4: Daily Revenue */}
-          <div className="rounded-2xl bg-surface-container-low border border-outline-variant/30 p-5 shadow-sm flex flex-col justify-between">
-            <div className="flex items-start justify-between">
-              <div>
-                <span className="text-[11px] font-bold text-on-surface-variant uppercase tracking-wider">
-                  Daily Turnstile Revenue
-                </span>
-                <div className="flex items-baseline gap-2 mt-1">
-                  <span className="text-3xl font-black text-primary font-stat-metric">$4,850</span>
-                  <span className="text-xs text-on-surface-variant">Today</span>
-                </div>
-              </div>
-              <div className="p-2.5 rounded-xl bg-surface-container text-primary">
-                <Receipt className="w-5 h-5" />
-              </div>
-            </div>
-            <div className="mt-3">
-              <div className="flex items-center justify-between text-xs text-on-surface-variant">
-                <span>18 Subscriptions</span>
-                <span className="font-semibold text-on-surface">6 PT Sessions booked</span>
-              </div>
-              <div className="w-full bg-surface-container-highest h-1.5 rounded-full mt-1.5 overflow-hidden">
-                <div className="bg-primary h-full rounded-full" style={{ width: '82%' }} />
-              </div>
-            </div>
-          </div>
-        </section>
-
-        {/* Two-Column Master Layout (65% / 35%) */}
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start min-w-0">
-          {/* Left Column (8 cols): Active Member Directory & Turnstile Feed */}
-          <div className="lg:col-span-8 flex flex-col gap-6 min-w-0">
-            <div className="rounded-2xl bg-surface-container-low border border-outline-variant/30 p-6 shadow-sm min-w-0">
-              {/* Header & Search */}
-              <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-4">
-                <div>
-                  <div className="flex items-center gap-2">
-                    <span className="h-2 w-2 rounded-full bg-primary" />
-                    <h2 className="text-lg font-bold text-on-surface font-display">
-                      Active Member Directory & Turnstile Feed
-                    </h2>
-                  </div>
-                  <p className="text-xs text-on-surface-variant">
-                    Live telemetry from turnstile scanner bank A & B
-                  </p>
-                </div>
-
-                <div className="relative w-full md:w-64">
-                  <Search className="w-4 h-4 absolute left-3 top-2.5 text-on-surface-variant" />
-                  <input
-                    type="text"
-                    value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                    placeholder="Filter by ID, Name, Locker..."
-                    className="w-full bg-surface-container text-on-surface placeholder:text-outline text-xs pl-9 pr-3 py-2 rounded-lg border border-outline-variant/40 focus:ring-1 focus:ring-primary focus:outline-none transition-all"
-                  />
-                </div>
-              </div>
-
-              {/* Filter Pills */}
-              <div className="flex items-center gap-2 overflow-x-auto no-scrollbar py-1">
-                <button
-                  type="button"
-                  onClick={() => setActiveFilter('all')}
-                  className={`px-3 py-1 rounded-full text-xs font-bold transition-colors cursor-pointer ${
-                    activeFilter === 'all'
-                      ? 'bg-primary text-on-primary-container shadow-xs'
-                      : 'bg-surface-container text-on-surface-variant hover:text-on-surface'
-                  }`}
-                >
-                  All ({MEMBERS_DATA.length})
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setActiveFilter('vip')}
-                  className={`px-3 py-1 rounded-full text-xs font-bold transition-colors cursor-pointer ${
-                    activeFilter === 'vip'
-                      ? 'bg-primary text-on-primary-container shadow-xs'
-                      : 'bg-surface-container text-on-surface-variant hover:text-on-surface'
-                  }`}
-                >
-                  VIP Platinum (2)
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setActiveFilter('standard')}
-                  className={`px-3 py-1 rounded-full text-xs font-bold transition-colors cursor-pointer ${
-                    activeFilter === 'standard'
-                      ? 'bg-primary text-on-primary-container shadow-xs'
-                      : 'bg-surface-container text-on-surface-variant hover:text-on-surface'
-                  }`}
-                >
-                  Standard Pass (2)
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setActiveFilter('trial')}
-                  className={`px-3 py-1 rounded-full text-xs font-bold transition-colors cursor-pointer ${
-                    activeFilter === 'trial'
-                      ? 'bg-primary text-on-primary-container shadow-xs'
-                      : 'bg-surface-container text-on-surface-variant hover:text-on-surface'
-                  }`}
-                >
-                  Free Trial (1)
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setActiveFilter('flagged')}
-                  className={`px-3 py-1 rounded-full text-xs font-bold transition-colors cursor-pointer ${
-                    activeFilter === 'flagged'
-                      ? 'bg-error text-on-error shadow-xs'
-                      : 'bg-error-container/30 text-error hover:bg-error-container/40'
-                  }`}
-                >
-                  Flagged (1)
-                </button>
-              </div>
-
-              {/* Responsive Data Table */}
-              <div className="overflow-x-auto mt-4">
-                <table className="w-full text-left text-xs border-collapse">
-                  <thead>
-                    <tr className="text-on-surface-variant text-[11px] uppercase bg-surface-container/60">
-                      <th className="py-3 px-4 rounded-l-lg font-bold">Member</th>
-                      <th className="py-3 px-3 font-bold">Membership Tier</th>
-                      <th className="py-3 px-3 font-bold">Check-In Time</th>
-                      <th className="py-3 px-3 font-bold">Locker</th>
-                      <th className="py-3 px-3 font-bold">Access Status</th>
-                      <th className="py-3 px-4 rounded-r-lg text-right font-bold">Action</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-outline-variant/10">
-                    {filteredMembers.map((m) => (
-                      <tr key={m.id} className="hover:bg-surface-container/40 transition-colors">
-                        <td className="py-3 px-4">
-                          <div className="flex items-center gap-3">
-                            <div className="w-8 h-8 rounded-full bg-surface-container-high border border-outline-variant/50 flex items-center justify-center font-bold text-on-surface text-xs">
-                              {m.initials}
-                            </div>
-                            <div className="flex flex-col">
-                              <span className="font-bold text-on-surface">{m.name}</span>
-                              <span className="text-[10px] text-outline font-mono">{m.id}</span>
-                            </div>
-                          </div>
-                        </td>
-
-                        <td className="py-3 px-3">
-                          <span
-                            className={`px-2 py-0.5 rounded-full text-[10px] font-bold inline-block ${
-                              m.tierCategory === 'vip'
-                                ? 'bg-primary/15 text-primary'
-                                : m.tierCategory === 'trial'
-                                ? 'bg-secondary-container/20 text-secondary'
-                                : m.tierCategory === 'flagged'
-                                ? 'bg-error-container/30 text-error'
-                                : 'bg-surface-container-high text-on-surface'
-                            }`}
-                          >
-                            {m.tier}
-                          </span>
-                        </td>
-
-                        <td className="py-3 px-3 text-on-surface font-mono text-[11px]">
-                          {m.checkInTime}
-                        </td>
-
-                        <td className="py-3 px-3">
-                          <span className="px-2 py-0.5 rounded bg-surface-container text-on-surface font-mono text-[10px]">
-                            {m.locker}
-                          </span>
-                        </td>
-
-                        <td className="py-3 px-3">
-                          <span
-                            className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold ${
-                              m.passStatus === 'Verified'
-                                ? 'bg-primary/10 text-primary'
-                                : m.passStatus === 'Waiver Req.'
-                                ? 'bg-tertiary-container/20 text-tertiary'
-                                : 'bg-error/15 text-error'
-                            }`}
-                          >
-                            {m.passStatus === 'Verified' ? (
-                              <CheckCircle2 className="w-3 h-3" />
-                            ) : null}
-                            {m.passStatus}
-                          </span>
-                        </td>
-
-                        <td className="py-3 px-4 text-right">
-                          <button
-                            type="button"
-                            className="p-1 rounded hover:bg-surface-container text-on-surface-variant hover:text-on-surface transition-colors cursor-pointer"
-                          >
-                            •••
-                          </button>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-
-              {/* Bottom Table Strip */}
-              <div className="mt-4 pt-3 flex flex-col sm:flex-row items-center justify-between gap-2 text-xs text-on-surface-variant border-t border-outline-variant/20">
-                <span>Showing {filteredMembers.length} of {MEMBERS_DATA.length} on floor</span>
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    className="px-3 py-1.5 rounded-lg bg-surface-container text-on-surface hover:bg-surface-container-high text-xs font-semibold"
-                  >
-                    Export CSV
-                  </button>
-                  <button
-                    type="button"
-                    className="px-3 py-1.5 rounded-lg bg-primary-container text-on-primary-container text-xs font-bold"
-                  >
-                    View All Roster
-                  </button>
-                </div>
-              </div>
-            </div>
-
-            {/* Multi-Site Branch Load & Capacity */}
-            <div className="rounded-2xl bg-surface-container-low border border-outline-variant/30 p-6 shadow-sm min-w-0">
-              <div className="flex items-center justify-between mb-4">
-                <div>
-                  <h3 className="text-base font-bold text-on-surface font-display">
-                    Multi-Site Capacity & Load Balancing
-                  </h3>
-                  <p className="text-xs text-on-surface-variant">Real-time turnstile load distribution</p>
-                </div>
-                <span className="text-[10px] text-outline font-mono">Synchronized 12s ago</span>
-              </div>
-
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                <div className="p-3.5 rounded-xl bg-surface-container border border-outline-variant/30">
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs font-bold text-on-surface">Downtown Flagship</span>
-                    <span className="text-[9px] px-1.5 py-0.5 rounded bg-primary/20 text-primary font-bold">
-                      ACTIVE
-                    </span>
-                  </div>
-                  <div className="my-2">
-                    <div className="flex justify-between text-[11px] mb-1">
-                      <span className="text-on-surface-variant">Capacity</span>
-                      <span className="font-bold text-on-surface">142 / 210 (67.6%)</span>
-                    </div>
-                    <div className="w-full bg-surface-container-highest h-2 rounded-full overflow-hidden">
-                      <div className="bg-primary h-full rounded-full" style={{ width: '67.6%' }} />
-                    </div>
-                  </div>
-                </div>
-
-                <div className="p-3.5 rounded-xl bg-surface-container border border-outline-variant/30">
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs font-bold text-on-surface">Westside CrossFit</span>
-                    <span className="text-[9px] px-1.5 py-0.5 rounded bg-secondary/20 text-secondary font-bold">
-                      HIGH
-                    </span>
-                  </div>
-                  <div className="my-2">
-                    <div className="flex justify-between text-[11px] mb-1">
-                      <span className="text-on-surface-variant">Capacity</span>
-                      <span className="font-bold text-on-surface">184 / 200 (92%)</span>
-                    </div>
-                    <div className="w-full bg-surface-container-highest h-2 rounded-full overflow-hidden">
-                      <div className="bg-secondary h-full rounded-full" style={{ width: '92%' }} />
-                    </div>
-                  </div>
-                </div>
-
-                <div className="p-3.5 rounded-xl bg-surface-container border border-outline-variant/30">
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs font-bold text-on-surface">Uptown Spa Club</span>
-                    <span className="text-[9px] px-1.5 py-0.5 rounded bg-tertiary-container/20 text-tertiary font-bold">
-                      AUDIT
-                    </span>
-                  </div>
-                  <div className="my-2">
-                    <div className="flex justify-between text-[11px] mb-1">
-                      <span className="text-on-surface-variant">Capacity</span>
-                      <span className="font-bold text-on-surface">68 / 150 (45%)</span>
-                    </div>
-                    <div className="w-full bg-surface-container-highest h-2 rounded-full overflow-hidden">
-                      <div className="bg-tertiary h-full rounded-full" style={{ width: '45%' }} />
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          {/* Right Column (4 cols): Document Verification Queue & Gym Showcase */}
-          <div className="lg:col-span-4 flex flex-col gap-6 min-w-0">
-            {/* Document Queue */}
-            <div className="rounded-2xl bg-surface-container-low border border-outline-variant/30 p-6 shadow-sm min-w-0">
-              <div className="flex items-center justify-between pb-3">
-                <div className="flex items-center gap-2">
-                  <ShieldCheck className="w-5 h-5 text-tertiary" />
-                  <h3 className="text-base font-bold text-on-surface font-display">
-                    Platform Compliance
-                  </h3>
-                </div>
-                <span className="px-2 py-0.5 rounded-full bg-tertiary-container/20 text-tertiary text-[10px] font-bold">
-                  1 In Review
-                </span>
-              </div>
-              <p className="text-xs text-on-surface-variant mb-4">
-                Upload institutional documents required by GymPulse HQ to keep turnstiles and merchant gateways active.
+          ) : members.length === 0 ? (
+            <div className="py-16 px-6 text-center rounded-xl border border-dashed border-outline-variant/30 bg-surface-container/30">
+              <Users className="w-12 h-12 text-outline mx-auto mb-3 opacity-50" />
+              <h3 className="text-base font-bold text-on-surface">No Members Found</h3>
+              <p className="text-xs text-on-surface-variant mt-1 max-w-md mx-auto">
+                {searchQuery.trim()
+                  ? `No members match the query "${searchQuery}". Clear your search to see all records.`
+                  : 'There are currently no members registered in this facility partition. Click the button below to register your first member.'}
               </p>
+              {!searchQuery.trim() && (
+                <button
+                  type="button"
+                  onClick={() => setIsAddModalOpen(true)}
+                  className="mt-4 px-4 py-2 rounded-xl bg-primary hover:bg-primary-hover active:bg-primary-active text-[#1f3700] text-xs font-bold shadow-md shadow-primary/20 transition-all cursor-pointer"
+                >
+                  + Register First Member
+                </button>
+              )}
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs">
+                <thead className="border-b border-outline-variant/30 text-outline uppercase font-mono text-[10px]">
+                  <tr>
+                    <th className="py-2.5 px-3">Member Name</th>
+                    <th className="py-2.5 px-3">Phone Number</th>
+                    <th className="py-2.5 px-3">Email</th>
+                    <th className="py-2.5 px-3">Member Number</th>
+                    <th className="py-2.5 px-3">Gender</th>
+                    <th className="py-2.5 px-3 text-right">Account Status</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-outline-variant/20">
+                  {members.map((m) => (
+                    <tr key={m.id} className="hover:bg-surface-container/50 transition-colors">
+                      <td className="py-3 px-3 font-bold text-on-surface">
+                        <div>{m.fullName}</div>
+                        <div className="text-[10px] text-outline font-mono">ID: {m.id.slice(0, 8)}...</div>
+                      </td>
+                      <td className="py-3 px-3 font-mono text-outline">{m.phone}</td>
+                      <td className="py-3 px-3 text-on-surface-variant">{m.email || '—'}</td>
+                      <td className="py-3 px-3 font-mono text-primary">{m.memberNumber || m.id.slice(0, 8)}</td>
+                      <td className="py-3 px-3 capitalize text-outline">{m.gender || '—'}</td>
+                      <td className="py-3 px-3 text-right">
+                        <span className="inline-flex px-2 py-0.5 rounded-full bg-primary/15 text-primary text-[10px] font-bold">
+                          ACTIVE
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      </div>
 
-              {/* Progress Bar */}
-              <div className="bg-surface-container p-3 rounded-xl mb-4 border border-outline-variant/30">
-                <div className="flex items-center justify-between text-[11px] text-on-surface-variant mb-2 font-medium">
-                  <span className="text-primary font-bold">1. Uploaded</span>
-                  <span className="text-tertiary font-bold">2. Under Review</span>
-                  <span className="text-outline">3. Cleared</span>
-                </div>
-                <div className="w-full bg-surface-container-highest h-1.5 rounded-full overflow-hidden flex">
-                  <div className="bg-primary w-1/2 h-full" />
-                  <div className="bg-tertiary w-1/4 h-full animate-pulse" />
-                  <div className="bg-surface-variant w-1/4 h-full" />
-                </div>
+      {/* Register Member Modal Dialog */}
+      {isAddModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-background/80 backdrop-blur-md animate-in fade-in">
+          <div className="w-full max-w-md rounded-xl bg-surface-container-low border border-outline-variant/40 shadow-2xl p-6 relative">
+            <div className="flex items-center justify-between pb-3 border-b border-outline-variant/30 mb-4">
+              <div>
+                <h3 className="text-base font-bold text-on-surface">Register New Club Member</h3>
+                <p className="text-xs text-on-surface-variant">Front-desk intake into facility database</p>
               </div>
-
-              {/* Documents List */}
-              <div className="flex flex-col gap-2.5">
-                <div className="p-3 rounded-xl bg-surface-container border border-outline-variant/30 flex items-center justify-between shadow-xs">
-                  <div className="flex items-center gap-2.5 min-w-0">
-                    <span className="text-tertiary text-lg">📄</span>
-                    <div className="flex flex-col min-w-0">
-                      <span className="text-xs font-bold text-on-surface truncate">
-                        Liability_Coverage_2025.pdf
-                      </span>
-                      <span className="text-[10px] text-outline">Submitted 2h ago • 8.4 MB</span>
-                    </div>
-                  </div>
-                  <span className="px-2 py-0.5 rounded bg-tertiary-container/20 text-tertiary text-[10px] font-bold shrink-0">
-                    HQ Reviewing
-                  </span>
-                </div>
-
-                <div className="p-3 rounded-xl bg-surface-container border border-outline-variant/30 flex items-center justify-between shadow-xs">
-                  <div className="flex items-center gap-2.5 min-w-0">
-                    <span className="text-primary text-lg">✅</span>
-                    <div className="flex flex-col min-w-0">
-                      <span className="text-xs font-bold text-on-surface truncate">
-                        Trainer_AED_Cert_Marcus.pdf
-                      </span>
-                      <span className="text-[10px] text-outline">Verified Oct 21 • 2.1 MB</span>
-                    </div>
-                  </div>
-                  <span className="px-2 py-0.5 rounded bg-primary/10 text-primary text-[10px] font-bold shrink-0">
-                    Approved
-                  </span>
-                </div>
-              </div>
-
               <button
                 type="button"
-                className="mt-4 w-full py-2.5 px-3 rounded-xl bg-surface-container hover:bg-surface-container-high border border-dashed border-outline-variant hover:border-primary transition-all flex flex-col items-center justify-center gap-1 group cursor-pointer"
+                onClick={() => setIsAddModalOpen(false)}
+                className="text-outline hover:text-on-surface text-lg cursor-pointer"
               >
-                <UploadCloud className="w-5 h-5 text-primary group-hover:scale-110 transition-transform" />
-                <span className="text-xs font-bold text-on-surface">Submit Verification Document</span>
-                <span className="text-[10px] text-outline">PDF, PNG, JPG (Up to 25 MB)</span>
+                &times;
               </button>
             </div>
 
-            {/* Gym Showcase Card */}
-            <div className="rounded-2xl bg-surface-container-low border border-outline-variant/30 p-5 shadow-sm min-w-0">
-              <div className="flex items-center justify-between mb-3">
-                <h3 className="text-sm font-bold text-on-surface font-display">
-                  Downtown Campus Showcase
-                </h3>
-                <span className="px-2 py-0.5 rounded-full bg-secondary-container/20 text-secondary text-[10px] font-bold">
-                  Public Live
-                </span>
+            {actionError && (
+              <div className="mb-4 p-3 rounded-lg bg-error-container/20 border border-error/40 flex items-start gap-2.5 text-xs text-error">
+                <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+                <span>{actionError}</span>
               </div>
-              <div className="p-4 rounded-xl bg-surface-container border border-outline-variant/30 mb-3">
-                <div className="text-sm font-bold text-on-surface">Downtown Flagship Campus</div>
-                <p className="text-xs text-secondary mt-0.5">8,200 sq. ft. • 4 Training Zones</p>
-                <div className="mt-3 text-xs text-on-surface-variant space-y-1">
-                  <div>🕒 05:00 AM – 11:00 PM Daily</div>
-                  <div>📍 410 Grand Ave, Suite 100, Dubai, UAE</div>
+            )}
+
+            <form onSubmit={handleRegisterMember} className="space-y-3">
+              <div>
+                <label className="block text-xs font-semibold text-on-surface mb-1">
+                  Full Name *
+                </label>
+                <input
+                  type="text"
+                  required
+                  placeholder="e.g. Elena Rostova"
+                  value={newFullName}
+                  onChange={(e) => setNewFullName(e.target.value)}
+                  className="w-full bg-surface-container text-on-surface text-xs px-3 py-2 rounded-lg border border-outline-variant/50 focus:border-primary focus:outline-none"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-on-surface mb-1">
+                  Phone Number (E.164) *
+                </label>
+                <input
+                  type="text"
+                  required
+                  placeholder="+971501234567"
+                  value={newPhone}
+                  onChange={(e) => setNewPhone(e.target.value)}
+                  className="w-full bg-surface-container text-on-surface text-xs px-3 py-2 rounded-lg border border-outline-variant/50 focus:border-primary focus:outline-none font-mono"
+                />
+                <p className="text-[10px] text-outline mt-1 font-mono">
+                  Must include country prefix (e.g. +971 for UAE)
+                </p>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-on-surface mb-1">
+                  Email Address (Optional)
+                </label>
+                <input
+                  type="email"
+                  placeholder="member@example.com"
+                  value={newEmail}
+                  onChange={(e) => setNewEmail(e.target.value)}
+                  className="w-full bg-surface-container text-on-surface text-xs px-3 py-2 rounded-lg border border-outline-variant/50 focus:border-primary focus:outline-none"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-semibold text-on-surface mb-1">Gender</label>
+                  <select
+                    value={newGender}
+                    onChange={(e) => setNewGender(e.target.value as 'male' | 'female' | 'other')}
+                    className="w-full bg-surface-container text-on-surface text-xs px-3 py-2 rounded-lg border border-outline-variant/50 focus:border-primary focus:outline-none"
+                  >
+                    <option value="male">Male</option>
+                    <option value="female">Female</option>
+                    <option value="other">Other</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-on-surface mb-1">Home Branch</label>
+                  <select
+                    value={selectedBranchId}
+                    onChange={(e) => setSelectedBranchId(e.target.value)}
+                    className="w-full bg-surface-container text-on-surface text-xs px-3 py-2 rounded-lg border border-outline-variant/50 focus:border-primary focus:outline-none"
+                  >
+                    {branches.length > 0 ? (
+                      branches.map((b) => (
+                        <option key={b.id} value={b.id}>
+                          {b.name}
+                        </option>
+                      ))
+                    ) : (
+                      <option value="">Downtown Flagship</option>
+                    )}
+                  </select>
                 </div>
               </div>
-              <div className="flex flex-wrap gap-1.5 mb-3">
-                <span className="px-2 py-0.5 rounded bg-surface-container text-on-surface text-[10px]">Sauna Suite</span>
-                <span className="px-2 py-0.5 rounded bg-surface-container text-on-surface text-[10px]">Olympic Barbells</span>
-                <span className="px-2 py-0.5 rounded bg-surface-container text-on-surface text-[10px]">Cryo Recovery</span>
-                <span className="px-2 py-0.5 rounded bg-surface-container text-on-surface text-[10px]">Protein Bar</span>
+
+              <div className="flex justify-end gap-2 pt-3">
+                <button
+                  type="button"
+                  onClick={() => setIsAddModalOpen(false)}
+                  className="px-3 py-2 rounded-lg text-xs font-bold text-outline hover:text-on-surface cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={isSubmittingMember}
+                  className="px-4 py-2 rounded-lg bg-primary hover:bg-primary-hover active:bg-primary-active text-[#1f3700] text-xs font-bold shadow-md shadow-primary/20 transition-all cursor-pointer disabled:opacity-50"
+                >
+                  {isSubmittingMember ? 'Creating...' : 'Register Member'}
+                </button>
               </div>
-            </div>
+            </form>
           </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }

@@ -80,13 +80,31 @@ function assert(condition, message, details = null) {
 }
 
 async function run() {
-  // Safety guard: refuse to run unless ALLOW_DESTRUCTIVE_TESTS=true and NODE_ENV is not production
+  // Safety guard: refuse to run unless ALLOW_DESTRUCTIVE_TESTS=true, NODE_ENV is not production, and DB name is dev/test
   if (process.env.NODE_ENV === 'production') {
     console.error('❌ E2E test suite cannot run in production mode!');
     process.exit(1);
   }
   if (process.env.ALLOW_DESTRUCTIVE_TESTS !== 'true') {
     console.error('❌ Safety guard: ALLOW_DESTRUCTIVE_TESTS=true must be set to run e2e integration tests.');
+    process.exit(1);
+  }
+
+  // Database name safety check
+  const dbUrl = process.env.DATABASE_URL || '';
+  let dbName = '';
+  try {
+    const parsed = new URL(dbUrl);
+    dbName = parsed.pathname.replace(/^\//, '').split('?')[0];
+  } catch {
+    const dbMatch = dbUrl.match(/\/([^/?]+)(\?|$)/);
+    dbName = dbMatch ? dbMatch[1] : '';
+  }
+
+  const DB_NAME_REGEX = /(dev|test|local|scratch)/i;
+  if (!dbName || !DB_NAME_REGEX.test(dbName)) {
+    console.error(`❌ Safety guard: Test database '${dbName}' does not match /(dev|test|local|scratch)/i.`);
+    console.error('Refusing to run destructive tests against a potentially non-test database.');
     process.exit(1);
   }
 

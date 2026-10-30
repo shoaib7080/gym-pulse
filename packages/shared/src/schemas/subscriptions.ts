@@ -63,7 +63,7 @@ export const enqueueNotificationSchema = z.object({
   memberId: z.string().optional().nullable(),
   channel: z.enum(['push', 'whatsapp', 'sms', 'email']),
   template: z.string().min(1),
-  payload: z.record(z.unknown()).default({}),
+  payload: z.record(z.string(), z.unknown()).default({}),
   dedupeKey: z.string().min(1),
 });
 

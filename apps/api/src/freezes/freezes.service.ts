@@ -20,6 +20,8 @@ import {
 } from '../db/schema';
 import {
   addDays,
+  addMonthsClamped,
+  computeInclusiveEndDate,
   calculateFreezeMath,
   calculateInclusiveDays,
   formatDateOnly,
@@ -374,6 +376,30 @@ export class FreezesService {
   }
 
   /**
+   * Automated scheduler / background worker settlement across all active gyms
+   */
+  async settleDueFreezesForAllGyms(asOfDate?: string) {
+    const activeGyms = await this.db.query.gyms.findMany({
+      where: eq(gyms.status, 'active'),
+    });
+
+    const results = [];
+    for (const g of activeGyms) {
+      try {
+        const res = await this.settleDueFreezesForGym(g.id, asOfDate);
+        results.push(res);
+      } catch (err: any) {
+        this.logger.error(`[FreezeScheduler] Failed settling freezes for gym ${g.id}: ${err?.message}`);
+      }
+    }
+
+    return {
+      totalGymsProcessed: activeGyms.length,
+      gyms: results,
+    };
+  }
+
+  /**
    * 10-Step Eligibility Check (Spec Section 7.2)
    */
   async checkFreezeEligibility(
@@ -448,11 +474,8 @@ export class FreezesService {
         anniversaryYear -= 1;
       }
       anniversaryYear = Math.max(0, anniversaryYear);
-      const curCycleStart = new Date(Date.UTC(startY + anniversaryYear, startM - 1, startD));
-      const nextCycleStart = new Date(Date.UTC(startY + anniversaryYear + 1, startM - 1, startD));
-      nextCycleStart.setUTCDate(nextCycleStart.getUTCDate() - 1);
-      cycleStartDate = formatDateOnly(curCycleStart);
-      cycleEndDate = formatDateOnly(nextCycleStart);
+      cycleStartDate = addMonthsClamped(membership.startDate, anniversaryYear * 12);
+      cycleEndDate = computeInclusiveEndDate(cycleStartDate, 'year', 1);
     }
 
     const activeOrHistoricalFreezes = existingFreezes.filter(
@@ -1435,6 +1458,27 @@ export class FreezesService {
     });
 
     return { purgedCount: proofIds.length };
+  }
+
+  /**
+   * Automated scheduler / background worker proof purge across all active gyms
+   */
+  async purgeExpiredProofsForAllGyms() {
+    const activeGyms = await this.db.query.gyms.findMany({
+      where: eq(gyms.status, 'active'),
+    });
+
+    let totalPurged = 0;
+    for (const g of activeGyms) {
+      try {
+        const res = await this.purgeExpiredProofs(g.id);
+        totalPurged += res.purgedCount;
+      } catch (err: any) {
+        this.logger.error(`[FreezeScheduler] Failed purging proofs for gym ${g.id}: ${err?.message}`);
+      }
+    }
+
+    return { totalGymsProcessed: activeGyms.length, totalPurged };
   }
 
   /**

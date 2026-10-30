@@ -21,6 +21,16 @@ export class PlatformController {
   constructor(private readonly platformService: PlatformService) {}
 
   /**
+   * Platform Admin Profile: Returns the authenticated platform admin profile & role
+   * Accessible by: superadmin, support, auditor
+   */
+  @Get('me')
+  @PlatformRoles('superadmin', 'support', 'auditor')
+  async getMe(@CurrentPlatformAdmin() admin: PlatformAdminContext) {
+    return admin;
+  }
+
+  /**
    * Platform Overview: Overall SaaS metrics (gyms, branches, members, admins)
    * Accessible by: superadmin, support, auditor
    */

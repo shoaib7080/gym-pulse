@@ -1,4 +1,5 @@
-import { useState } from 'react';
+import { useState, useEffect, useCallback } from "react";
+import { useAuth } from "../../context/AuthContext";
 import {
   UploadCloud,
   Download,
@@ -8,19 +9,262 @@ import {
   Dumbbell,
   ShieldCheck,
   AlertTriangle,
-  ExternalLink,
-} from '../ui/icons';
+  Users,
+  Activity,
+  Receipt,
+  Building2,
+  Search,
+} from "../ui/icons";
+
+interface RevenueSummary {
+  grossSalesMinor: number;
+  vatMinor: number;
+  netSalesMinor: number;
+  transactionCount: number;
+}
+
+interface CheckinSummary {
+  totalCheckins: number;
+  allowCount: number;
+  denyCount: number;
+  hourlyHeatmap: Array<{ hour: number; count: number }>;
+}
+
+interface MemberItem {
+  id: string;
+  fullName: string;
+  phone: string;
+  email?: string;
+  memberNumber?: string;
+  status?: string;
+  createdAt?: string;
+}
+
+interface BranchItem {
+  id: string;
+  name: string;
+  code: string;
+  city?: string;
+  isMain: boolean;
+}
 
 export function BentoDashboardView() {
+  const { activeGym, apiFetch } = useAuth();
+
+  const [revenue, setRevenue] = useState<RevenueSummary | null>(null);
+  const [checkins, setCheckins] = useState<CheckinSummary | null>(null);
+  const [members, setMembers] = useState<MemberItem[]>([]);
+  const [branches, setBranches] = useState<BranchItem[]>([]);
+  const [plansCount, setPlansCount] = useState<number>(0);
+  const [isLoadingData, setIsLoadingData] = useState(true);
+
+  // Quick Action Modal states
+  const [isCheckinModalOpen, setIsCheckinModalOpen] = useState(false);
+  const [checkinPhone, setCheckinPhone] = useState("");
+  const [checkinResult, setCheckinResult] = useState<{
+    allowed?: boolean;
+    message?: string;
+  } | null>(null);
+  const [isCheckinLoading, setIsCheckinLoading] = useState(false);
+
   const [isHardwareQuoteOpen, setIsHardwareQuoteOpen] = useState(false);
   const [quoteSubmitted, setQuoteSubmitted] = useState(false);
   const [quoteForm, setQuoteForm] = useState({
-    gateType: 'speed_gate',
-    lanes: '2',
-    branch: 'Downtown Flagship',
-    contactPhone: '',
-    notes: '',
+    gateType: "speed_gate",
+    lanes: "2",
+    branch: activeGym?.tradeName || "Downtown Flagship",
+    contactPhone: "",
+    notes: "",
   });
+
+  // Fetch real telemetry and entity data from backend
+  const loadDashboardTelemetry = useCallback(async () => {
+    setIsLoadingData(true);
+
+    if (!activeGym) {
+      // In Stage 1: Explorer Mode, preload realistic interactive sample data
+      setRevenue({
+        grossSalesMinor: 1485000,
+        vatMinor: 74250,
+        netSalesMinor: 1410750,
+        transactionCount: 28,
+      });
+      setCheckins({
+        totalCheckins: 87,
+        allowCount: 84,
+        denyCount: 3,
+        hourlyHeatmap: [
+          { hour: 6, count: 4 },
+          { hour: 7, count: 12 },
+          { hour: 8, count: 18 },
+          { hour: 9, count: 14 },
+          { hour: 10, count: 8 },
+          { hour: 12, count: 10 },
+          { hour: 17, count: 22 },
+          { hour: 18, count: 26 },
+          { hour: 19, count: 19 },
+          { hour: 20, count: 11 },
+        ],
+      });
+      setMembers([
+        {
+          id: "mem-sample-01",
+          fullName: "Rashid Al-Maktoum",
+          phone: "+971 50 123 4567",
+          email: "rashid.m@example.ae",
+          memberNumber: "MEM-2026-001",
+          status: "active",
+          createdAt: "2026-02-15T08:30:00Z",
+        },
+        {
+          id: "mem-sample-02",
+          fullName: "Sarah Jenkins",
+          phone: "+971 52 987 6543",
+          email: "sarah.j@example.com",
+          memberNumber: "MEM-2026-002",
+          status: "active",
+          createdAt: "2026-02-18T10:15:00Z",
+        },
+        {
+          id: "mem-sample-03",
+          fullName: "Tariq Mansoor",
+          phone: "+971 55 333 4455",
+          email: "tariq@example.ae",
+          memberNumber: "MEM-2026-003",
+          status: "active",
+          createdAt: "2026-02-20T14:45:00Z",
+        },
+        {
+          id: "mem-sample-04",
+          fullName: "Elena Rostova",
+          phone: "+971 56 777 8899",
+          email: "elena.r@example.com",
+          memberNumber: "MEM-2026-004",
+          status: "frozen",
+          createdAt: "2026-02-22T09:00:00Z",
+        },
+      ]);
+      setBranches([
+        {
+          id: "br-sample-01",
+          name: "Downtown Flagship",
+          code: "DXB-01",
+          city: "Dubai",
+          isMain: true,
+        },
+        {
+          id: "br-sample-02",
+          name: "Dubai Marina Bay",
+          code: "DXB-02",
+          city: "Dubai",
+          isMain: false,
+        },
+      ]);
+      setPlansCount(4);
+      setIsLoadingData(false);
+      return;
+    }
+
+    try {
+      const [revRes, chkRes, memRes, brRes, plnRes] = await Promise.allSettled([
+        apiFetch("/v1/reports/revenue"),
+        apiFetch("/v1/reports/checkins"),
+        apiFetch("/v1/members?limit=8"),
+        apiFetch("/v1/branches"),
+        apiFetch("/v1/plans"),
+      ]);
+
+      if (revRes.status === "fulfilled" && revRes.value.ok) {
+        const revData = await revRes.value.json();
+        setRevenue(revData.summary || null);
+      }
+
+      if (chkRes.status === "fulfilled" && chkRes.value.ok) {
+        const chkData = await chkRes.value.json();
+        setCheckins(chkData || null);
+      }
+
+      if (memRes.status === "fulfilled" && memRes.value.ok) {
+        const memData = await memRes.value.json();
+        const memList = Array.isArray(memData) ? memData : memData?.data || [];
+        setMembers(memList);
+      }
+
+      if (brRes.status === "fulfilled" && brRes.value.ok) {
+        const brData = await brRes.value.json();
+        setBranches(Array.isArray(brData) ? brData : []);
+      }
+
+      if (plnRes.status === "fulfilled" && plnRes.value.ok) {
+        const plnData = await plnRes.value.json();
+        setPlansCount(Array.isArray(plnData) ? plnData.length : 0);
+      }
+    } catch (err) {
+      console.warn("Dashboard telemetry fetch error:", err);
+    } finally {
+      setIsLoadingData(false);
+    }
+  }, [activeGym, apiFetch]);
+
+  useEffect(() => {
+    loadDashboardTelemetry();
+  }, [loadDashboardTelemetry]);
+
+  // Handle Quick Check-in Access Test
+  const handlePerformCheckin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!checkinPhone.trim()) return;
+
+    setIsCheckinLoading(true);
+    setCheckinResult(null);
+
+    try {
+      const res = await apiFetch("/v1/access/verify", {
+        method: "POST",
+        body: JSON.stringify({
+          phone: checkinPhone.trim(),
+          transport: "manual_desk",
+        }),
+      });
+
+      const data = await res.json();
+      if (res.ok && data?.allowed) {
+        setCheckinResult({
+          allowed: true,
+          message:
+            data.message ||
+            `Access Granted for ${data.member?.fullName || "Member"}.`,
+        });
+        loadDashboardTelemetry();
+      } else {
+        setCheckinResult({
+          allowed: false,
+          message:
+            data?.reason ||
+            data?.message ||
+            "Access Denied: No active membership found.",
+        });
+      }
+    } catch {
+      setCheckinResult({
+        allowed: false,
+        message: "Network error communicating with turnstile access gateway.",
+      });
+    } finally {
+      setIsCheckinLoading(false);
+    }
+  };
+
+  const grossSalesAed = revenue
+    ? (revenue.grossSalesMinor / 100).toFixed(2)
+    : "0.00";
+  const vatSalesAed = revenue ? (revenue.vatMinor / 100).toFixed(2) : "0.00";
+  const totalVisitsToday = checkins ? checkins.totalCheckins : 0;
+  const allowVisits = checkins ? checkins.allowCount : 0;
+  const activeFacilityName = activeGym?.tradeName || "Downtown Flagship";
+  const totalBranchesCount =
+    branches.length || activeGym?.branches?.length || 1;
+
   return (
     <div className="flex flex-col w-full pb-12">
       {/* Top Command Action Streamer */}
@@ -30,26 +274,38 @@ export function BentoDashboardView() {
           <div className="flex items-center gap-1.5 text-[11px] uppercase tracking-widest text-outline font-semibold">
             <span>GymPulse</span>
             <span className="text-on-surface-variant font-bold">/</span>
-            <span className="text-on-surface-variant">Downtown Flagship</span>
+            <span className="text-on-surface-variant">
+              {activeFacilityName}
+            </span>
             <span className="text-on-surface-variant font-bold">/</span>
-            <span className="text-primary font-bold">Master Hub</span>
+            <span className="text-primary font-bold">Live Dashboard</span>
           </div>
 
           <div className="flex items-center gap-2 flex-wrap">
             <h1 className="text-xl font-bold text-on-surface flex items-center gap-2 font-display">
-              Downtown Flagship
-              <span className="inline-flex items-center px-2 py-0.5 bg-primary/10 text-primary text-[11px] font-bold rounded-md">
-                <span className="w-1.5 h-1.5 rounded-full bg-primary animate-pulse mr-1.5" />
-                LIVE OPS
-              </span>
+              {!activeGym ? "Demo Facility" : activeFacilityName}
+              {!activeGym ? (
+                <span className="inline-flex items-center px-2 py-0.5 bg-primary/15 text-primary border border-primary/30 text-[11px] font-semibold rounded-md">
+                  DEMO MODE
+                </span>
+              ) : activeGym.status === "pending_verification" ? (
+                <span className="inline-flex items-center px-2 py-0.5 bg-amber-500/15 text-amber-300 border border-amber-500/30 text-[11px] font-semibold rounded-md">
+                  PENDING REVIEW
+                </span>
+              ) : (
+                <span className="inline-flex items-center px-2 py-0.5 bg-slate-800/80 text-slate-300 border border-white/[0.08] text-[11px] font-semibold rounded-md">
+                  LIVE OPS
+                </span>
+              )}
             </h1>
             <span className="text-outline text-xs hidden sm:inline">•</span>
             <span className="text-xs text-on-surface-variant">
-              842 Active Checked-in Members Today
+              {totalVisitsToday} Checked-in Visits Today
             </span>
             <span className="text-outline text-xs hidden sm:inline">•</span>
-            <span className="text-xs font-semibold text-secondary">
-              Capacity 68%
+            <span className="text-xs text-slate-400 font-medium">
+              {totalBranchesCount} Facility{" "}
+              {totalBranchesCount === 1 ? "Branch" : "Branches"}
             </span>
           </div>
         </div>
@@ -62,601 +318,466 @@ export function BentoDashboardView() {
               setIsHardwareQuoteOpen(true);
               setQuoteSubmitted(false);
             }}
-            className="group flex items-center gap-1.5 px-3 py-2 rounded-lg bg-surface-container-high hover:bg-surface-container-highest border border-secondary/30 hover:border-secondary text-secondary text-xs font-semibold transition-all shadow-xs active:scale-95 cursor-pointer"
+            className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-slate-800/70 hover:bg-slate-800 border border-white/[0.08] hover:border-white/20 text-slate-300 text-xs font-semibold transition-all shadow-xs cursor-pointer"
             title="Automated turnstile gates hardware integration quote"
           >
-            <span className="w-1.5 h-1.5 rounded-full bg-secondary animate-pulse" />
-            <span>Want automated turnstile gates? Request hardware quote</span>
+            <span>Turnstile Hardware Integration</span>
           </button>
 
           <button
             type="button"
-            className="group flex items-center gap-1.5 px-3 py-2 rounded-lg bg-surface-container-high hover:bg-surface-container-highest text-on-surface text-xs font-semibold transition-all shadow-xs active:scale-95 cursor-pointer"
-          >
-            <UploadCloud className="w-4 h-4 text-secondary group-hover:scale-110 transition-transform" />
-            <span>Submit Document</span>
-          </button>
-
-          <button
-            type="button"
-            className="group flex items-center gap-1.5 px-3 py-2 rounded-lg bg-surface-container-high hover:bg-surface-container-highest text-on-surface text-xs font-semibold transition-all shadow-xs active:scale-95 cursor-pointer"
-          >
-            <Download className="w-4 h-4 text-outline group-hover:text-primary transition-colors" />
-            <span>Export Shift Audit</span>
-          </button>
-
-          <button
-            type="button"
-            className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-primary hover:bg-primary-hover text-on-primary-container text-xs font-bold transition-all shadow-[0_0_20px_-3px_rgba(158,233,57,0.35)] active:scale-95 cursor-pointer"
+            onClick={() => {
+              setIsCheckinModalOpen(true);
+              setCheckinResult(null);
+            }}
+            className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-primary hover:bg-primary-hover active:bg-primary-active text-[#1f3700] text-xs font-bold transition-all shadow-md shadow-primary/20 cursor-pointer"
           >
             <Plus className="w-4 h-4" />
-            <span>Quick Check-in</span>
+            <span>Quick Check-In</span>
           </button>
         </div>
       </div>
 
-      {/* Primary Asymmetric Bento Canvas */}
-      <div className="p-6 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-6 min-w-0">
-        {/* [BOX 1: 2x2 Bento Hub] Real-time Telemetry & Live Access Pulse */}
-        <div className="xl:col-span-2 xl:row-span-2 rounded-2xl bg-surface-container-low border border-outline-variant/30 p-6 flex flex-col justify-between relative overflow-hidden group shadow-lg min-w-0">
-          {/* Ambient Glow */}
+      {/* Primary Bento Telemetry Grid: Equalized 12-column baseline stretch */}
+      <div className="p-6 grid grid-cols-1 lg:grid-cols-12 items-stretch gap-6 min-w-0">
+        {/* [CARD 1: 6 cols] Check-In Activity & Turnstile Access */}
+        <div className="lg:col-span-6 rounded-xl bg-[#131722] border border-white/[0.08] p-6 flex flex-col justify-between relative overflow-hidden group shadow-lg min-w-0">
           <div className="absolute -right-24 -top-24 w-72 h-72 rounded-full bg-primary/5 blur-3xl pointer-events-none" />
 
           <div>
             <div className="flex items-start justify-between pb-4">
               <div className="flex flex-col">
                 <span className="text-[11px] font-bold uppercase tracking-wider text-primary">
-                  Real-time Telemetry
+                  Check-In Activity
                 </span>
                 <h2 className="text-xl font-bold text-on-surface font-display">
-                  Live Membership & Access Pulse
+                  Turnstile &amp; Access Activity
                 </h2>
-              </div>
-              <div className="flex items-center gap-1.5 px-2.5 py-1 bg-surface-container-high rounded-lg border border-outline-variant/40">
-                <span className="w-2 h-2 rounded-full bg-primary animate-ping" />
-                <span className="text-[10px] text-on-surface font-mono font-bold">
-                  1.2s LATENCY
-                </span>
               </div>
             </div>
 
             {/* Metrics Strip */}
             <div className="grid grid-cols-3 gap-3 my-4">
-              <div className="p-3.5 rounded-xl bg-surface-container border border-outline-variant/30 flex flex-col">
-                <span className="text-[11px] text-on-surface-variant font-medium">Active Members</span>
-                <span className="text-2xl font-black text-on-surface tracking-tight mt-1 font-stat-metric">
-                  1,420
+              <div className="p-3.5 rounded-lg bg-[#1A202C] border border-white/[0.07] flex flex-col">
+                <span className="text-[11px] text-slate-400 font-medium">
+                  Total Registered
                 </span>
-                <span className="text-[10px] text-primary flex items-center gap-0.5 mt-1 font-bold">
-                  ↑ +4.8% net
+                <span className="text-2xl font-black text-white tracking-tight mt-1 font-stat-metric">
+                  {isLoadingData ? "..." : members.length}
+                </span>
+                <span className="text-[10px] text-slate-400 flex items-center gap-0.5 mt-1 font-medium">
+                  Active &amp; Past Members
                 </span>
               </div>
 
-              <div className="p-3.5 rounded-xl bg-surface-container border border-outline-variant/30 flex flex-col">
-                <span className="text-[11px] text-on-surface-variant font-medium">Expiring 7-Days</span>
-                <span className="text-2xl font-black text-tertiary tracking-tight mt-1 font-stat-metric">
-                  18
+              <div className="p-3.5 rounded-lg bg-[#1A202C] border border-white/[0.07] flex flex-col">
+                <span className="text-[11px] text-slate-400 font-medium">
+                  Today&apos;s Check-ins
                 </span>
-                <span className="text-[10px] text-tertiary mt-1">Notices sent</span>
+                <span className="text-2xl font-black text-white tracking-tight mt-1 font-stat-metric">
+                  {isLoadingData ? "..." : totalVisitsToday}
+                </span>
+                <span className="text-[10px] text-slate-400 mt-1">
+                  {allowVisits} Approved
+                </span>
               </div>
 
-              <div className="p-3.5 rounded-xl bg-surface-container border border-outline-variant/30 flex flex-col">
-                <span className="text-[11px] text-on-surface-variant font-medium">Pending Renewals</span>
-                <span className="text-2xl font-black text-secondary tracking-tight mt-1 font-stat-metric">
-                  32
+              <div className="p-3.5 rounded-lg bg-[#1A202C] border border-white/[0.07] flex flex-col">
+                <span className="text-[11px] text-slate-400 font-medium">
+                  Membership Plans
                 </span>
-                <span className="text-[10px] text-secondary mt-1">Auto-debit staged</span>
+                <span className="text-2xl font-black text-white tracking-tight mt-1 font-stat-metric">
+                  {isLoadingData ? "..." : plansCount}
+                </span>
+                <span className="text-[10px] text-slate-400 mt-1">
+                  Active Tiers
+                </span>
               </div>
             </div>
 
-            {/* Hourly Occupancy Area Curve (Inline SVG) */}
-            <div className="p-4 rounded-xl bg-surface-container border border-outline-variant/30 mb-4">
-              <div className="flex items-center justify-between mb-2">
+            {/* Check-In Event Stream or Empty State */}
+            <div className="p-4 rounded-lg bg-[#1A202C] border border-white/[0.07] mb-4">
+              <div className="flex items-center justify-between mb-3">
                 <span className="text-xs text-on-surface font-bold">
-                  Hourly Throughput vs Capacity Peak
+                  Recent Access Events
                 </span>
-                <span className="text-[10px] text-outline font-mono">
-                  06:00 - 22:00 UTC
-                </span>
-              </div>
-
-              <div className="w-full h-32 relative">
-                <svg
-                  className="w-full h-full overflow-visible"
-                  preserveAspectRatio="none"
-                  viewBox="0 0 500 120"
-                >
-                  <defs>
-                    <linearGradient id="areaGradient" x1="0" x2="0" y1="0" y2="1">
-                      <stop offset="0%" stopColor="var(--color-primary, #9ee939)" stopOpacity="0.35" />
-                      <stop offset="100%" stopColor="var(--color-primary, #9ee939)" stopOpacity="0.0" />
-                    </linearGradient>
-                    <linearGradient id="secondaryAreaGradient" x1="0" x2="0" y1="0" y2="1">
-                      <stop offset="0%" stopColor="var(--color-secondary, #4cd7f6)" stopOpacity="0.2" />
-                      <stop offset="100%" stopColor="var(--color-secondary, #4cd7f6)" stopOpacity="0.0" />
-                    </linearGradient>
-                  </defs>
-
-                  {/* Capacity Ceiling */}
-                  <line x1="0" x2="500" y1="20" y2="20" stroke="var(--color-outline-variant, #424936)" strokeDasharray="4 4" strokeWidth="1" />
-                  
-                  {/* Historical Average Path */}
-                  <path d="M0,90 Q60,75 120,40 T240,65 T360,30 T500,70 L500,120 L0,120 Z" fill="url(#secondaryAreaGradient)" />
-                  
-                  {/* Real-time Active Today */}
-                  <path d="M0,105 Q70,95 140,55 T260,35 T380,18 T500,45 L500,120 L0,120 Z" fill="url(#areaGradient)" />
-                  <path d="M0,105 Q70,95 140,55 T260,35 T380,18 T500,45" fill="none" stroke="var(--color-primary, #9ee939)" strokeWidth="3" />
-
-                  {/* Current Ping Point */}
-                  <circle cx="380" cy="18" r="5" fill="var(--color-primary, #9ee939)" className="animate-ping" />
-                  <circle cx="380" cy="18" r="4" fill="var(--color-primary, #9ee939)" />
-                </svg>
-              </div>
-
-              <div className="flex justify-between text-[10px] text-outline pt-2 font-mono">
-                <span>06:00</span>
-                <span>09:00 (Rush)</span>
-                <span>12:00</span>
-                <span>15:00</span>
-                <span className="text-primary font-bold">18:00 (Peak: 68%)</span>
-                <span>22:00</span>
-              </div>
-            </div>
-
-            {/* Mini Turnstile Access Stream */}
-            <div className="flex flex-col gap-2">
-              <div className="flex items-center justify-between pb-1">
-                <span className="text-xs text-on-surface font-bold">
-                  Real-time Desk Check-In Stream (Software Mode)
-                </span>
-                <span className="text-[11px] text-primary hover:underline cursor-pointer">
-                  View Check-in Feed →
+                <span className="text-[10px] text-slate-400">
+                  Today&apos;s Activity
                 </span>
               </div>
 
-              <div className="flex flex-col gap-2">
-                <div className="flex items-center justify-between p-2.5 rounded-lg bg-surface-container border border-outline-variant/30">
-                  <div className="flex items-center gap-3">
-                    <div className="w-8 h-8 rounded-full bg-secondary/15 flex items-center justify-center text-secondary text-xs font-bold">
-                      DV
+              {totalVisitsToday === 0 ? (
+                <div className="py-6 px-4 text-center rounded-lg border border-dashed border-white/[0.08] bg-[#131722]/50">
+                  <Activity className="w-6 h-6 text-slate-500 mx-auto mb-1.5 opacity-60" />
+                  <p className="text-xs font-semibold text-on-surface">
+                    No visits logged today
+                  </p>
+                  <p className="text-[11px] text-slate-400 mt-0.5">
+                    Real-time turnstile events and desk check-ins will appear
+                    here as members enter.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsCheckinModalOpen(true);
+                      setCheckinResult(null);
+                    }}
+                    className="mt-3 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-bold text-primary border border-primary/30 transition-colors cursor-pointer"
+                  >
+                    Test Check-In Scan
+                  </button>
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between p-2.5 rounded-lg bg-[#131722] border border-white/[0.06]">
+                    <div className="flex items-center gap-2.5">
+                      <div className="w-7 h-7 rounded-full bg-emerald-500/20 text-emerald-400 flex items-center justify-center font-bold text-xs">
+                        OK
+                      </div>
+                      <div>
+                        <div className="text-xs font-bold text-on-surface">
+                          Verified Member Check-in
+                        </div>
+                        <div className="text-[10px] text-slate-400">
+                          Transport: Turnstile / Desk RFID
+                        </div>
+                      </div>
                     </div>
-                    <div className="flex flex-col">
-                      <span className="text-xs font-bold text-on-surface leading-tight">
-                        Derrick Vance
-                      </span>
-                      <span className="text-[10px] text-outline">
-                        Tier: Black Platinum • Desk Scanner #02
-                      </span>
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-3">
-                    <span className="text-[10px] text-on-surface-variant font-mono">2m ago</span>
-                    <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-primary/10 text-primary text-[10px] font-bold rounded">
-                      <CheckCircle2 className="w-3 h-3" /> APPROVED
+                    <span className="text-[10px] px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 font-bold">
+                      GRANTED
                     </span>
                   </div>
                 </div>
-
-                <div className="flex items-center justify-between p-2.5 rounded-lg bg-surface-container border border-outline-variant/30">
-                  <div className="flex items-center gap-3">
-                    <div className="w-8 h-8 rounded-full bg-tertiary-container/20 flex items-center justify-center text-tertiary text-xs font-bold">
-                      MK
-                    </div>
-                    <div className="flex flex-col">
-                      <span className="text-xs font-bold text-on-surface leading-tight">
-                        Maya Kowalski
-                      </span>
-                      <span className="text-[10px] text-outline">
-                        Tier: Standard Core • Desk Scanner #01
-                      </span>
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-3">
-                    <span className="text-[10px] text-on-surface-variant font-mono">4m ago</span>
-                    <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-primary/10 text-primary text-[10px] font-bold rounded">
-                      <CheckCircle2 className="w-3 h-3" /> APPROVED
-                    </span>
-                  </div>
-                </div>
-              </div>
-
-              {/* Turnstile Hardware Add-on Callout Banner */}
-              <div className="mt-2 p-3 rounded-xl bg-gradient-to-r from-surface-container-high to-surface-container border border-secondary/25 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-xs">
-                <div className="flex items-center gap-2.5">
-                  <div className="w-7 h-7 rounded-lg bg-secondary/15 flex items-center justify-center text-secondary shrink-0">
-                    <ExternalLink className="w-3.5 h-3.5" />
-                  </div>
-                  <div className="flex flex-col">
-                    <span className="text-xs font-bold text-on-surface">Automated Turnstiles & Gates</span>
-                    <span className="text-[10px] text-on-surface-variant">
-                      Phase 1 uses software desk scanning. Want automated turnstile gates? Request hardware quote.
-                    </span>
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setIsHardwareQuoteOpen(true);
-                    setQuoteSubmitted(false);
-                  }}
-                  className="px-3 py-1.5 rounded-lg bg-secondary hover:bg-secondary/90 text-on-secondary text-xs font-bold transition-all shrink-0 cursor-pointer shadow-xs active:scale-95"
-                >
-                  Request Quote
-                </button>
-              </div>
+              )}
             </div>
+          </div>
+
+          <div className="pt-3 text-[11px] text-slate-400 flex items-center justify-between border-t border-white/[0.06]">
+            <span>Turnstile Connectivity: Online</span>
+            <span className="text-slate-300 font-medium">
+              Front-Desk &amp; Turnstiles Synced
+            </span>
           </div>
         </div>
 
-        {/* [BOX 2: Wide 2x1 Bento Box] Regional Facility Network Health */}
-        <div className="xl:col-span-2 rounded-2xl bg-surface-container-low border border-outline-variant/30 p-6 flex flex-col justify-between shadow-lg min-w-0">
-          <div className="flex items-center justify-between mb-3">
-            <div className="flex flex-col">
-              <span className="text-[11px] font-bold uppercase tracking-wider text-secondary">
-                Cluster Overview
-              </span>
-              <h2 className="text-lg font-bold text-on-surface font-display">
-                Regional Facility Network Health
-              </h2>
-            </div>
-            <button
-              type="button"
-              className="flex items-center gap-1 text-primary hover:underline text-xs font-semibold cursor-pointer"
-            >
-              <Plus className="w-3.5 h-3.5" />
-              <span>Add Location</span>
-            </button>
-          </div>
-
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-            {/* Branch 1: Downtown */}
-            <div className="p-4 rounded-xl bg-surface-container border-2 border-primary/40 shadow-sm flex flex-col justify-between">
-              <div className="flex items-center justify-between">
-                <span className="text-[10px] font-bold px-2 py-0.5 bg-primary/15 text-primary rounded">
-                  ACTIVE HUB
-                </span>
-                <span className="h-2 w-2 rounded-full bg-primary animate-pulse" />
-              </div>
-              <div className="my-3">
-                <h3 className="text-sm font-bold text-on-surface leading-tight">Downtown Flagship</h3>
-                <span className="text-[10px] text-outline">Metro Center Zone</span>
-              </div>
-              <div className="flex items-baseline justify-between pt-1">
-                <div>
-                  <div className="text-[10px] text-on-surface-variant">Headcount</div>
-                  <div className="text-base font-bold text-on-surface">842</div>
-                </div>
-                <div className="text-right">
-                  <div className="text-[10px] text-on-surface-variant">MTD Volume</div>
-                  <div className="text-base font-bold text-primary">$42.5k</div>
-                </div>
-              </div>
-            </div>
-
-            {/* Branch 2: Westside */}
-            <div className="p-4 rounded-xl bg-surface-container border border-outline-variant/30 hover:border-secondary/50 transition-colors shadow-sm flex flex-col justify-between cursor-pointer">
-              <div className="flex items-center justify-between">
-                <span className="text-[10px] font-bold px-2 py-0.5 bg-secondary/15 text-secondary rounded">
-                  PEAK LOAD
-                </span>
-                <span className="text-[10px] text-outline font-mono">#02</span>
-              </div>
-              <div className="my-3">
-                <h3 className="text-sm font-bold text-on-surface leading-tight">Westside CrossFit</h3>
-                <span className="text-[10px] text-outline">Industrial Park Pier</span>
-              </div>
-              <div className="flex items-baseline justify-between pt-1">
-                <div>
-                  <div className="text-[10px] text-on-surface-variant">Headcount</div>
-                  <div className="text-base font-bold text-on-surface">520</div>
-                </div>
-                <div className="text-right">
-                  <div className="text-[10px] text-on-surface-variant">Capacity</div>
-                  <div className="text-base font-bold text-secondary">92%</div>
-                </div>
-              </div>
-            </div>
-
-            {/* Branch 3: Uptown */}
-            <div className="p-4 rounded-xl bg-surface-container border border-outline-variant/30 hover:border-tertiary/50 transition-colors shadow-sm flex flex-col justify-between cursor-pointer">
-              <div className="flex items-center justify-between">
-                <span className="text-[10px] font-bold px-2 py-0.5 bg-tertiary-container/20 text-tertiary rounded">
-                  INSPECTION
-                </span>
-                <span className="text-[10px] text-outline font-mono">#03</span>
-              </div>
-              <div className="my-3">
-                <h3 className="text-sm font-bold text-on-surface leading-tight">Uptown Spa Club</h3>
-                <span className="text-[10px] text-outline">North Highlands</span>
-              </div>
-              <div className="flex items-baseline justify-between pt-1">
-                <div>
-                  <div className="text-[10px] text-on-surface-variant">Headcount</div>
-                  <div className="text-base font-bold text-on-surface">310</div>
-                </div>
-                <div className="text-right">
-                  <div className="text-[10px] text-on-surface-variant">Status</div>
-                  <div className="text-xs font-bold text-tertiary">Audit Pend.</div>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* [BOX 3: Medium 1x2 Bento Box] Platform Compliance Vault */}
-        <div className="xl:col-span-1 xl:row-span-2 rounded-2xl bg-surface-container-low border border-outline-variant/30 p-6 flex flex-col justify-between shadow-lg min-w-0">
+        {/* [CARD 2: 3 cols] Financial Velocity & UAE VAT */}
+        <div className="lg:col-span-3 rounded-xl bg-[#131722] border border-white/[0.08] p-6 flex flex-col justify-between shadow-lg">
           <div>
-            <div className="flex items-center justify-between mb-1">
-              <span className="text-[11px] font-bold uppercase tracking-wider text-primary">
-                Regulatory Vault
-              </span>
-              <ShieldCheck className="w-4 h-4 text-outline" />
-            </div>
-            <h2 className="text-base font-bold text-on-surface font-display mb-3">
-              Platform Compliance
-            </h2>
-
-            {/* Progress Meter */}
-            <div className="mb-4">
-              <div className="flex items-center justify-between mb-1">
-                <span className="text-xs text-on-surface-variant">Audit Readiness</span>
-                <span className="text-sm font-bold text-primary font-mono">85%</span>
-              </div>
-              <div className="w-full h-2 bg-surface-container-highest rounded-full overflow-hidden">
-                <div className="h-full bg-primary rounded-full transition-all duration-500" style={{ width: '85%' }} />
-              </div>
-            </div>
-
-            {/* Compliance List with Left Status Strips */}
-            <div className="flex flex-col gap-2.5">
-              <div className="p-2.5 rounded-lg bg-surface-container border border-outline-variant/30 flex flex-col relative overflow-hidden pl-3.5 shadow-xs">
-                <div className="absolute left-0 top-0 bottom-0 w-1 bg-primary" />
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-semibold text-on-surface">Operating License 2025</span>
-                  <span className="px-1.5 py-0.5 bg-primary/10 text-primary text-[9px] font-bold rounded">
-                    VERIFIED
-                  </span>
-                </div>
-                <span className="text-[10px] text-outline mt-0.5 font-mono">#OP-88219</span>
-              </div>
-
-              <div className="p-2.5 rounded-lg bg-surface-container border border-outline-variant/30 flex flex-col relative overflow-hidden pl-3.5 shadow-xs">
-                <div className="absolute left-0 top-0 bottom-0 w-1 bg-primary" />
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-semibold text-on-surface">Fire Safety Clearance</span>
-                  <span className="px-1.5 py-0.5 bg-primary/10 text-primary text-[9px] font-bold rounded">
-                    VERIFIED
-                  </span>
-                </div>
-                <span className="text-[10px] text-outline mt-0.5">Valid until Oct 2026</span>
-              </div>
-
-              <div className="p-2.5 rounded-lg bg-surface-container border border-outline-variant/30 flex flex-col relative overflow-hidden pl-3.5 shadow-xs">
-                <div className="absolute left-0 top-0 bottom-0 w-1 bg-tertiary-container" />
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-semibold text-on-surface">AED / CPR Staff Registry</span>
-                  <span className="px-1.5 py-0.5 bg-tertiary-container/20 text-tertiary text-[9px] font-bold rounded">
-                    PENDING
-                  </span>
-                </div>
-                <span className="text-[10px] text-outline mt-0.5">Review queue: Admin Desk</span>
-              </div>
-
-              <div className="p-2.5 rounded-lg bg-surface-container border border-outline-variant/30 flex flex-col relative overflow-hidden pl-3.5 shadow-xs">
-                <div className="absolute left-0 top-0 bottom-0 w-1 bg-error" />
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-semibold text-on-surface">Public Liability Cover</span>
-                  <span className="px-1.5 py-0.5 bg-error-container/30 text-error text-[9px] font-bold rounded">
-                    ACTION REQ
-                  </span>
-                </div>
-                <span className="text-[10px] text-error font-bold mt-0.5">Renew by Nov 30!</span>
-              </div>
-            </div>
-          </div>
-
-          {/* Mini Drag & Drop File Area */}
-          <div className="mt-4 p-3 rounded-xl bg-surface-container/70 border border-dashed border-outline-variant hover:border-primary transition-colors flex flex-col items-center justify-center text-center cursor-pointer group">
-            <UploadCloud className="w-5 h-5 text-outline group-hover:text-primary transition-colors mb-1" />
-            <span className="text-xs font-bold text-on-surface">Upload Verification PDF</span>
-            <span className="text-[10px] text-outline mb-2">Max 25MB (PDF, DOCX)</span>
-            <button
-              type="button"
-              className="px-3 py-1 rounded bg-surface-container-highest hover:bg-surface-bright text-on-surface text-[11px] font-semibold transition-colors"
-            >
-              Select File
-            </button>
-          </div>
-        </div>
-
-        {/* [BOX 4: 1x1 Bento Box] Trainer & Class Roster */}
-        <div className="xl:col-span-1 rounded-2xl bg-surface-container-low border border-outline-variant/30 p-5 flex flex-col justify-between shadow-lg min-w-0">
-          <div>
-            <div className="flex items-center justify-between mb-1">
-              <span className="text-[11px] font-bold uppercase tracking-wider text-secondary">
-                Floor Coaches
-              </span>
-              <span className="px-2 py-0.5 bg-secondary/15 text-secondary text-[10px] font-bold rounded">
-                14 ON DUTY
-              </span>
-            </div>
-            <h2 className="text-base font-bold text-on-surface font-display mb-3">
-              Trainer Roster
-            </h2>
-
-            <div className="p-3.5 rounded-xl bg-surface-container border border-outline-variant/30 flex flex-col gap-1.5">
-              <div className="flex items-center justify-between">
-                <span className="text-[10px] text-primary font-mono font-bold flex items-center gap-1">
-                  <Clock className="w-3 h-3 text-primary animate-pulse" /> IN 15M
-                </span>
-                <span className="text-[10px] text-outline">Arena 1</span>
-              </div>
-              <span className="text-xs font-bold text-on-surface">Olympic Lifting with Marcus</span>
-              <div className="flex items-center justify-between pt-1">
-                <div className="flex -space-x-1.5">
-                  <span className="inline-block h-5 w-5 rounded-full bg-surface-variant text-center text-[9px] leading-5 text-on-surface font-bold ring-1 ring-surface">
-                    DA
-                  </span>
-                  <span className="inline-block h-5 w-5 rounded-full bg-secondary text-center text-[9px] leading-5 text-on-secondary font-bold ring-1 ring-surface">
-                    SL
-                  </span>
-                  <span className="inline-block h-5 w-5 rounded-full bg-primary text-center text-[9px] leading-5 text-on-primary font-bold ring-1 ring-surface">
-                    +16
-                  </span>
-                </div>
-                <span className="text-[10px] text-secondary font-bold font-mono">18 / 20 SPOTS</span>
-              </div>
-            </div>
-          </div>
-
-          <div className="flex items-center justify-between pt-2 text-[11px] text-outline">
-            <span>6 Classes Today</span>
-            <span className="text-primary hover:underline cursor-pointer">View schedule →</span>
-          </div>
-        </div>
-
-        {/* [BOX 5: 1x1 Bento Box] Equipment Status & Diagnostics */}
-        <div className="xl:col-span-1 rounded-2xl bg-surface-container-low border border-outline-variant/30 p-5 flex flex-col justify-between shadow-lg min-w-0">
-          <div>
-            <div className="flex items-center justify-between mb-1">
-              <span className="text-[11px] font-bold uppercase tracking-wider text-secondary">
-                Asset Diagnostics
-              </span>
-              <span className="px-2 py-0.5 bg-primary/10 text-primary text-[10px] font-bold rounded">
-                98% ONLINE
-              </span>
-            </div>
-            <h2 className="text-base font-bold text-on-surface font-display mb-3">
-              Equipment Status
-            </h2>
-
-            <div className="flex flex-col gap-2">
-              <div className="flex items-center justify-between p-2 rounded-lg bg-surface-container border border-outline-variant/30">
-                <div className="flex items-center gap-2">
-                  <Dumbbell className="w-4 h-4 text-tertiary" />
-                  <div className="flex flex-col">
-                    <span className="text-xs font-bold text-on-surface leading-tight">Cable Cross #02</span>
-                    <span className="text-[10px] text-outline">Pulley inspection</span>
-                  </div>
-                </div>
-                <span className="text-[10px] text-tertiary font-bold">PENDING</span>
-              </div>
-
-              <div className="flex items-center justify-between p-2 rounded-lg bg-surface-container border border-outline-variant/30">
-                <div className="flex items-center gap-2">
-                  <AlertTriangle className="w-4 h-4 text-error" />
-                  <div className="flex flex-col">
-                    <span className="text-xs font-bold text-on-surface leading-tight">Treadmill #08</span>
-                    <span className="text-[10px] text-outline">Motor calibration</span>
-                  </div>
-                </div>
-                <span className="text-[10px] text-error font-bold">OFFLINE</span>
-              </div>
-            </div>
-          </div>
-
-          <button
-            type="button"
-            className="w-full mt-2 py-1.5 px-3 rounded-lg bg-surface-container-high hover:bg-surface-bright text-secondary text-xs font-semibold transition-colors text-center"
-          >
-            Log Maintenance Ticket
-          </button>
-        </div>
-
-        {/* [BOX 6: Wide 2x1 Bento Box] Revenue & Billing Snapshot */}
-        <div className="xl:col-span-2 rounded-2xl bg-surface-container-low border border-outline-variant/30 p-6 flex flex-col justify-between shadow-lg relative overflow-hidden min-w-0">
-          <div className="flex items-start justify-between">
-            <div className="flex flex-col">
-              <span className="text-[11px] font-bold uppercase tracking-wider text-primary">
+            <div className="flex items-center justify-between pb-2">
+              <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">
                 Financial Velocity
               </span>
-              <h2 className="text-lg font-bold text-on-surface font-display">
-                Revenue & Billing Terminal
-              </h2>
+              <Receipt className="w-4 h-4 text-slate-400" />
             </div>
-            <button
-              type="button"
-              className="px-3 py-1.5 rounded-lg bg-primary hover:bg-primary-hover text-on-primary-container text-xs font-bold transition-all shadow-xs"
+
+            <div className="mt-2">
+              <span className="text-xs text-slate-400 font-medium">
+                Gross Revenue (AED)
+              </span>
+              <div className="text-3xl font-black text-white font-stat-metric tracking-tight mt-0.5">
+                {isLoadingData ? "..." : `${grossSalesAed} AED`}
+              </div>
+              <div className="text-[11px] text-slate-400 mt-1 font-normal">
+                Includes 5% UAE VAT: {vatSalesAed} AED
+              </div>
+            </div>
+
+            {/* Revenue Status or Empty State */}
+            {revenue && revenue.transactionCount > 0 ? (
+              <div className="mt-4 p-3 rounded-lg bg-[#1A202C] border border-white/[0.07] text-xs">
+                <div className="flex justify-between text-on-surface">
+                  <span className="text-slate-400">Transactions:</span>
+                  <span className="font-bold tabular-nums font-mono">{revenue.transactionCount}</span>
+                </div>
+                <div className="flex justify-between text-on-surface mt-1">
+                  <span className="text-slate-400">Net Revenue:</span>
+                  <span className="font-bold tabular-nums font-mono">
+                    {(revenue.netSalesMinor / 100).toFixed(2)} AED
+                  </span>
+                </div>
+              </div>
+            ) : (
+              <div className="mt-4 p-4 rounded-lg bg-[#1A202C] border border-dashed border-white/[0.07] text-center">
+                <p className="text-xs text-on-surface font-semibold">
+                  No Sales Logged Yet
+                </p>
+                <p className="text-[10px] text-slate-400 mt-1">
+                  Desk POS sales and membership payments will automatically
+                  stream into this VAT audit ledger.
+                </p>
+              </div>
+            )}
+          </div>
+
+          <div className="pt-3 border-t border-white/[0.06] text-[10px] text-slate-400 flex items-center justify-between">
+            <span>UAE FTA 15-Digit TRN</span>
+            <span
+              className={`font-semibold ${
+                activeGym?.vatRegistered ? "text-emerald-400" : "text-slate-400"
+              }`}
             >
-              Retry Queued Debits
-            </button>
-          </div>
-
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 my-3">
-            <div className="p-3.5 rounded-xl bg-surface-container border border-outline-variant/30 flex flex-col">
-              <span className="text-[11px] text-on-surface-variant">Monthly Recurring (MRR)</span>
-              <span className="text-2xl font-black text-on-surface tracking-tight mt-1 font-stat-metric">
-                $94,280
-              </span>
-              <span className="text-[10px] text-primary font-bold mt-1">↑ +12.4% vs last mo</span>
-            </div>
-
-            <div className="p-3.5 rounded-xl bg-surface-container border border-outline-variant/30 flex flex-col">
-              <span className="text-[11px] text-on-surface-variant">Failed Payment Alerts</span>
-              <span className="text-2xl font-black text-error tracking-tight mt-1 font-stat-metric">
-                8
-              </span>
-              <span className="text-[10px] text-error-container mt-1 font-semibold">$1,420 recoverable</span>
-            </div>
-
-            <div className="p-3.5 rounded-xl bg-surface-container border border-outline-variant/30 flex flex-col">
-              <span className="text-[11px] text-on-surface-variant">Cleared Today</span>
-              <span className="text-2xl font-black text-secondary tracking-tight mt-1 font-stat-metric">
-                $4,185
-              </span>
-              <span className="text-[10px] text-outline mt-1 font-mono">Batch payout: 23:59 GST</span>
-            </div>
-          </div>
-
-          <div className="flex items-center justify-between text-xs text-on-surface-variant pt-2 border-t border-outline-variant/20">
-            <span className="flex items-center gap-1.5">
-              <span className="w-2 h-2 rounded-full bg-primary" /> Gateway: Nominal (99.99%)
-            </span>
-            <span className="text-primary hover:underline cursor-pointer">
-              Detailed Financial Ledger →
+              {activeGym?.vatRegistered ? "VERIFIED" : "EXEMPT"}
             </span>
           </div>
+        </div>
+
+        {/* [CARD 3: 3 cols] Branch Infrastructure */}
+        <div className="lg:col-span-3 rounded-xl bg-[#131722] border border-white/[0.08] p-6 flex flex-col justify-between shadow-lg">
+          <div>
+            <div className="flex items-center justify-between pb-2">
+              <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">
+                Facility Branches
+              </span>
+              <Building2 className="w-4 h-4 text-slate-400" />
+            </div>
+
+            <div className="mt-2">
+              <div className="text-3xl font-black text-white font-stat-metric tracking-tight">
+                {branches.length || 1}
+              </div>
+              <span className="text-xs text-slate-400 font-medium">
+                Operating Branch Locations
+              </span>
+            </div>
+
+            <div className="mt-4 space-y-2">
+              {branches.length > 0 ? (
+                branches.slice(0, 3).map((b) => (
+                  <div
+                    key={b.id}
+                    className="p-2.5 rounded-lg bg-[#1A202C] border border-white/[0.07] flex items-center justify-between text-xs"
+                  >
+                    <div>
+                      <div className="font-bold text-on-surface">{b.name}</div>
+                      <div className="text-[10px] text-slate-400">
+                        {b.code} • {b.city || "Dubai"}
+                      </div>
+                    </div>
+                    {b.isMain && (
+                      <span className="text-[9px] px-1.5 py-0.5 rounded bg-primary/20 text-primary font-bold">
+                        MAIN
+                      </span>
+                    )}
+                  </div>
+                ))
+              ) : (
+                <div className="p-2.5 rounded-lg bg-[#1A202C] border border-white/[0.07] text-xs">
+                  <div className="font-bold text-on-surface">
+                    {activeFacilityName}
+                  </div>
+                  <div className="text-[10px] text-slate-400">
+                    Branch #01 • Primary Hub
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="pt-3 border-t border-white/[0.06] text-[10px] text-slate-400 flex items-center justify-between">
+            <span>Timezone: {activeGym?.timezone || "Asia/Dubai"}</span>
+            <span className="text-emerald-400 font-semibold">SYNCED</span>
+          </div>
+        </div>
+
+        {/* [CARD 4: 12 cols] Registered Club Members Directory */}
+        <div className="col-span-1 lg:col-span-12 rounded-xl bg-[#131722] border border-white/[0.08] p-6 shadow-lg">
+          <div className="flex items-center justify-between mb-4">
+            <div>
+              <h3 className="text-base font-bold text-on-surface font-display">
+                Registered Club Members
+              </h3>
+              <p className="text-xs text-slate-400">
+                Active membership directory and status ledger.
+              </p>
+            </div>
+
+            <span className="text-xs text-slate-400">
+              Total Count: {members.length}
+            </span>
+          </div>
+
+          {members.length === 0 ? (
+            <div className="py-12 px-6 text-center rounded-lg border border-dashed border-white/[0.08] bg-[#1A202C]/60">
+              <Users className="w-10 h-10 text-slate-500 mx-auto mb-2 opacity-60" />
+              <h4 className="text-sm font-bold text-on-surface">
+                No Members Registered Yet
+              </h4>
+              <p className="text-xs text-slate-400 mt-1 max-w-md mx-auto">
+                Your facility database is connected and ready. You can register
+                your first member using the front-desk operations intake or
+                check-in flow.
+              </p>
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs">
+                <thead className="border-b border-white/[0.08] text-slate-400 uppercase text-[10px]">
+                  <tr>
+                    <th className="py-2.5 px-3">Member Name</th>
+                    <th className="py-2.5 px-3">Phone</th>
+                    <th className="py-2.5 px-3">Email</th>
+                    <th className="py-2.5 px-3">Member Number</th>
+                    <th className="py-2.5 px-3 text-right">Status</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-white/[0.05]">
+                  {members.map((m) => (
+                    <tr
+                      key={m.id}
+                      className="hover:bg-white/[0.02] transition-colors"
+                    >
+                      <td className="py-3 px-3 font-bold text-on-surface">
+                        {m.fullName}
+                      </td>
+                      <td className="py-3 px-3 font-mono tabular-nums text-slate-400">
+                        {m.phone}
+                      </td>
+                      <td className="py-3 px-3 text-slate-300">
+                        {m.email || "—"}
+                      </td>
+                      <td className="py-3 px-3 font-mono tabular-nums text-primary font-semibold">
+                        {m.memberNumber || `#MEM-${m.id.slice(0, 8).toUpperCase()}`}
+                      </td>
+                      <td className="py-3 px-3 text-right">
+                        <span className="inline-flex px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-400 text-[10px] font-bold">
+                          ACTIVE
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
       </div>
 
-      {/* Hardware Quote Request Modal */}
+      {/* Quick Check-In Modal Dialog */}
+      {isCheckinModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-background/80 backdrop-blur-md animate-in fade-in">
+          <div className="w-full max-w-md rounded-xl bg-surface-container-low border border-outline-variant/40 shadow-2xl p-6 relative">
+            <div className="flex items-center justify-between pb-3 border-b border-outline-variant/30 mb-4">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 rounded-lg bg-primary/20 text-primary">
+                  <Activity className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-on-surface">
+                    Desk Access Check-In
+                  </h3>
+                  <p className="text-[11px] text-on-surface-variant">
+                    Real-time gate verification test
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsCheckinModalOpen(false)}
+                className="text-outline hover:text-on-surface text-lg cursor-pointer"
+              >
+                &times;
+              </button>
+            </div>
+
+            {checkinResult && (
+              <div
+                className={`mb-4 p-3 rounded-lg border flex items-start gap-2.5 text-xs ${
+                  checkinResult.allowed
+                    ? "bg-primary/10 border-primary/30 text-primary font-bold"
+                    : "bg-error-container/20 border-error/30 text-error font-bold"
+                }`}
+              >
+                {checkinResult.allowed ? (
+                  <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5" />
+                ) : (
+                  <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+                )}
+                <span>{checkinResult.message}</span>
+              </div>
+            )}
+
+            <form onSubmit={handlePerformCheckin} className="space-y-4">
+              <div>
+                <label
+                  htmlFor="member-phone"
+                  className="block text-xs font-semibold text-on-surface mb-1"
+                >
+                  Member Phone Number
+                </label>
+                <input
+                  id="member-phone"
+                  type="text"
+                  required
+                  placeholder="+971501234567"
+                  value={checkinPhone}
+                  onChange={(e) => setCheckinPhone(e.target.value)}
+                  className="w-full bg-surface-container text-on-surface text-xs px-3 py-2.5 rounded-lg border border-outline-variant/50 focus:border-primary focus:outline-none font-mono"
+                />
+                <p className="text-[10px] text-outline mt-1 font-mono">
+                  Format: E.164 with international country code (e.g.
+                  +971501234567)
+                </p>
+              </div>
+
+              <div className="flex items-center justify-end gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setIsCheckinModalOpen(false)}
+                  className="px-3 py-2 rounded-lg text-xs font-bold text-outline hover:text-on-surface cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={isCheckinLoading}
+                  className="px-4 py-2 rounded-lg bg-primary hover:bg-primary-hover active:bg-primary-active text-[#1f3700] text-xs font-bold shadow-md shadow-primary/20 transition-all cursor-pointer disabled:opacity-50"
+                >
+                  {isCheckinLoading ? "Verifying..." : "Validate Entry"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Hardware Quote Dialog */}
       {isHardwareQuoteOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm animate-in fade-in duration-200">
-          <div className="relative w-full max-w-lg rounded-2xl bg-surface-container-low border border-outline-variant/50 p-6 shadow-2xl flex flex-col gap-4 text-on-surface">
-            {/* Header */}
-            <div className="flex items-start justify-between border-b border-outline-variant/30 pb-3">
-              <div className="flex flex-col">
-                <span className="text-[10px] font-bold uppercase tracking-wider text-secondary">
-                  Hardware Integration Add-on
-                </span>
-                <h3 className="text-lg font-bold font-display text-on-surface">
-                  Request Automated Turnstile Gates Quote
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-background/80 backdrop-blur-md animate-in fade-in">
+          <div className="w-full max-w-lg rounded-xl bg-surface-container-low border border-outline-variant/40 shadow-2xl p-6 relative">
+            <div className="flex items-center justify-between pb-3 border-b border-outline-variant/30 mb-4">
+              <div>
+                <h3 className="text-base font-bold text-on-surface">
+                  Automated Turnstile Hardware Quote
                 </h3>
+                <p className="text-xs text-on-surface-variant">
+                  IoT RFID / Biometric flap barrier gates for GCC gyms
+                </p>
               </div>
               <button
                 type="button"
                 onClick={() => setIsHardwareQuoteOpen(false)}
-                className="p-1 rounded-lg hover:bg-surface-container text-outline hover:text-on-surface transition-colors cursor-pointer"
+                className="text-outline hover:text-on-surface text-lg cursor-pointer"
               >
-                ✕
+                &times;
               </button>
             </div>
 
             {quoteSubmitted ? (
-              <div className="py-8 flex flex-col items-center text-center gap-3">
-                <div className="w-12 h-12 rounded-full bg-primary/15 text-primary flex items-center justify-center">
-                  <CheckCircle2 className="w-6 h-6" />
-                </div>
-                <h4 className="text-base font-bold text-on-surface">Quote Request Received!</h4>
-                <p className="text-xs text-on-surface-variant max-w-sm">
-                  Our hardware engineering partner will reach out within 24 hours with certified turnstile specs (ZKTeco/Hikvision), site survey coordination, and turnkey installation pricing.
+              <div className="py-6 text-center space-y-2">
+                <CheckCircle2 className="w-10 h-10 text-primary mx-auto" />
+                <h4 className="text-sm font-bold text-on-surface">
+                  Hardware Quote Request Dispatched
+                </h4>
+                <p className="text-xs text-on-surface-variant">
+                  Our certified UAE/GCC turnstile engineering partners will
+                  contact you within 24 hours.
                 </p>
                 <button
                   type="button"
                   onClick={() => setIsHardwareQuoteOpen(false)}
-                  className="mt-2 px-5 py-2 rounded-lg bg-primary hover:bg-primary-hover text-on-primary-container text-xs font-bold transition-all"
+                  className="mt-4 px-4 py-2 rounded-lg bg-primary text-[#1f3700] text-xs font-bold cursor-pointer"
                 >
-                  Back to Dashboard
+                  Close
                 </button>
               </div>
             ) : (
@@ -665,89 +786,80 @@ export function BentoDashboardView() {
                   e.preventDefault();
                   setQuoteSubmitted(true);
                 }}
-                className="flex flex-col gap-3.5 text-xs"
+                className="space-y-3"
               >
-                <p className="text-[11px] text-on-surface-variant">
-                  Phase 1 MVP runs on instant software desk scanning. Automated optical speed gates, flap barriers, and biometric turnstiles are available as an enterprise hardware add-on.
-                </p>
-
-                <div className="flex flex-col gap-1.5">
-                  <label className="font-semibold text-on-surface">Gate Type</label>
+                <div>
+                  <label className="block text-xs font-semibold text-on-surface mb-1">
+                    Gate Model
+                  </label>
                   <select
                     value={quoteForm.gateType}
-                    onChange={(e) => setQuoteForm({ ...quoteForm, gateType: e.target.value })}
-                    className="p-2.5 rounded-lg bg-surface-container border border-outline-variant/40 text-on-surface text-xs focus:outline-none focus:border-secondary"
+                    onChange={(e) =>
+                      setQuoteForm({ ...quoteForm, gateType: e.target.value })
+                    }
+                    className="w-full bg-surface-container text-on-surface text-xs px-3 py-2 rounded-lg border border-outline-variant/50 focus:border-primary focus:outline-none"
                   >
-                    <option value="speed_gate">Optical Speed Gate (Sleek Glass Swings - Recommended)</option>
-                    <option value="tripod">Tripod Turnstile (Heavy Duty Floor Stanchion)</option>
-                    <option value="flap_barrier">High-Throughput Flap Barrier</option>
+                    <option value="speed_gate">
+                      Optical Swing Speed Gate (Premium Glass)
+                    </option>
+                    <option value="tripod">
+                      Heavy-Duty Tripod Turnstile (CrossFit / High Throughput)
+                    </option>
+                    <option value="full_height">
+                      Full-Height Security Gate (24/7 Unstaffed)
+                    </option>
                   </select>
                 </div>
 
                 <div className="grid grid-cols-2 gap-3">
-                  <div className="flex flex-col gap-1.5">
-                    <label className="font-semibold text-on-surface">Lanes Needed</label>
-                    <select
+                  <div>
+                    <label className="block text-xs font-semibold text-on-surface mb-1">
+                      Number of Lanes
+                    </label>
+                    <input
+                      type="number"
+                      min={1}
+                      max={12}
                       value={quoteForm.lanes}
-                      onChange={(e) => setQuoteForm({ ...quoteForm, lanes: e.target.value })}
-                      className="p-2.5 rounded-lg bg-surface-container border border-outline-variant/40 text-on-surface text-xs focus:outline-none focus:border-secondary"
-                    >
-                      <option value="1">1 Lane (Single Direction)</option>
-                      <option value="2">2 Lanes (Bi-directional)</option>
-                      <option value="4">4 Lanes (Multi-entry)</option>
-                      <option value="6+">6+ Lanes (Large Chain)</option>
-                    </select>
+                      onChange={(e) =>
+                        setQuoteForm({ ...quoteForm, lanes: e.target.value })
+                      }
+                      className="w-full bg-surface-container text-on-surface text-xs px-3 py-2 rounded-lg border border-outline-variant/50 focus:border-primary focus:outline-none font-mono"
+                    />
                   </div>
-
-                  <div className="flex flex-col gap-1.5">
-                    <label className="font-semibold text-on-surface">Facility Branch</label>
+                  <div>
+                    <label className="block text-xs font-semibold text-on-surface mb-1">
+                      Contact Phone
+                    </label>
                     <input
                       type="text"
-                      value={quoteForm.branch}
-                      onChange={(e) => setQuoteForm({ ...quoteForm, branch: e.target.value })}
-                      className="p-2 rounded-lg bg-surface-container border border-outline-variant/40 text-on-surface text-xs focus:outline-none focus:border-secondary"
-                      placeholder="e.g. Downtown Flagship"
                       required
+                      placeholder="+971501234567"
+                      value={quoteForm.contactPhone}
+                      onChange={(e) =>
+                        setQuoteForm({
+                          ...quoteForm,
+                          contactPhone: e.target.value,
+                        })
+                      }
+                      className="w-full bg-surface-container text-on-surface text-xs px-3 py-2 rounded-lg border border-outline-variant/50 focus:border-primary focus:outline-none font-mono"
                     />
                   </div>
                 </div>
 
-                <div className="flex flex-col gap-1.5">
-                  <label className="font-semibold text-on-surface">Contact Phone (WhatsApp)</label>
-                  <input
-                    type="tel"
-                    value={quoteForm.contactPhone}
-                    onChange={(e) => setQuoteForm({ ...quoteForm, contactPhone: e.target.value })}
-                    className="p-2 rounded-lg bg-surface-container border border-outline-variant/40 text-on-surface text-xs focus:outline-none focus:border-secondary"
-                    placeholder="+971 50 123 4567"
-                    required
-                  />
-                </div>
-
-                <div className="flex flex-col gap-1.5">
-                  <label className="font-semibold text-on-surface">Additional Facility Notes (Optional)</label>
-                  <textarea
-                    rows={2}
-                    value={quoteForm.notes}
-                    onChange={(e) => setQuoteForm({ ...quoteForm, notes: e.target.value })}
-                    className="p-2 rounded-lg bg-surface-container border border-outline-variant/40 text-on-surface text-xs focus:outline-none focus:border-secondary resize-none"
-                    placeholder="e.g. Glass entry doors, ADA wheelchair lane required..."
-                  />
-                </div>
-
-                <div className="flex items-center justify-end gap-2 pt-2 border-t border-outline-variant/30">
+                <div className="flex justify-end gap-2 pt-2">
                   <button
                     type="button"
                     onClick={() => setIsHardwareQuoteOpen(false)}
-                    className="px-3.5 py-2 rounded-lg bg-surface-container-high hover:bg-surface-container-highest text-on-surface text-xs font-semibold cursor-pointer"
+                    className="px-3 py-2 rounded-lg text-xs font-bold text-outline hover:text-on-surface cursor-pointer"
                   >
                     Cancel
                   </button>
                   <button
                     type="submit"
-                    className="px-4 py-2 rounded-lg bg-secondary hover:bg-secondary/90 text-on-secondary text-xs font-bold transition-all shadow-xs cursor-pointer active:scale-95"
+                    className="px-4 py-2 rounded-lg bg-primary hover:bg-primary-hover active:bg-primary-active text-[#1f3700] text-xs font-bold shadow-md cursor-pointer"
                   >
-                    Submit Hardware Quote Request
+                    Submit Hardware Request
                   </button>
                 </div>
               </form>

@@ -46,7 +46,7 @@ export class MembersService {
         code: 'VALIDATION_FAILED',
         message: 'Invalid member registration data',
         invalidParams: parseResult.error.issues.map(
-          (i: { path: (string | number)[]; message: string }) => ({
+          (i: { path: PropertyKey[]; message: string }) => ({
             name: i.path.join('.'),
             reason: i.message,
           }),
@@ -345,7 +345,7 @@ export class MembersService {
         code: 'VALIDATION_FAILED',
         message: 'Invalid member update data',
         invalidParams: parseResult.error.issues.map(
-          (i: { path: (string | number)[]; message: string }) => ({
+          (i: { path: PropertyKey[]; message: string }) => ({
             name: i.path.join('.'),
             reason: i.message,
           }),

@@ -8,5 +8,8 @@
     "build": "pnpm -r build",
     "typecheck": "pnpm -r typecheck",
     "test": "pnpm --filter api test"
+  },
+  "devDependencies": {
+    "tsx": "^4.23.15"
   }
 }

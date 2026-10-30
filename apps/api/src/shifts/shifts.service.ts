@@ -36,7 +36,7 @@ export class ShiftsService {
         code: 'VALIDATION_FAILED',
         message: 'Invalid shift opening data',
         invalidParams: parseResult.error.issues.map(
-          (i: { path: (string | number)[]; message: string }) => ({
+          (i: { path: PropertyKey[]; message: string }) => ({
             name: i.path.join('.'),
             reason: i.message,
           }),
@@ -135,7 +135,7 @@ export class ShiftsService {
         code: 'VALIDATION_FAILED',
         message: 'Invalid shift closing data',
         invalidParams: parseResult.error.issues.map(
-          (i: { path: (string | number)[]; message: string }) => ({
+          (i: { path: PropertyKey[]; message: string }) => ({
             name: i.path.join('.'),
             reason: i.message,
           }),

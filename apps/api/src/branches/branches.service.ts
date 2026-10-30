@@ -29,7 +29,7 @@ export class BranchesService {
         code: 'VALIDATION_FAILED',
         message: 'Invalid branch creation data',
         invalidParams: parseResult.error.issues.map(
-          (i: { path: (string | number)[]; message: string }) => ({
+          (i: { path: PropertyKey[]; message: string }) => ({
             name: i.path.join('.'),
             reason: i.message,
           }),

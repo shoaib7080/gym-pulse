@@ -1,37 +1,49 @@
 import * as path from 'node:path';
 import * as dotenv from 'dotenv';
 import { Pool } from 'pg';
+import { auth } from '../auth/auth';
 
 dotenv.config({ path: path.join(__dirname, '../../.env') });
 
-const dbUrl = process.env.DATABASE_URL;
-if (!dbUrl) {
-  console.error('❌ DATABASE_URL is missing in apps/api/.env');
-  process.exit(1);
-}
-
-const isProduction = process.env.NODE_ENV === 'production';
-const allowProdSeed = process.env.ALLOW_PRODUCTION_SEED === 'true' || process.argv.includes('--force-prod');
-
-if (isProduction && !allowProdSeed) {
-  console.error('❌ Refusing to run seed script in production without --force-prod or ALLOW_PRODUCTION_SEED=true');
-  process.exit(1);
-}
-
-const targetEmail = (
-  process.env.PLATFORM_ADMIN_EMAIL ||
-  process.argv[2] ||
-  'admin@gympulse.ae'
-).toLowerCase().trim();
-
-const pool = new Pool({
-  connectionString: dbUrl,
-  ssl: dbUrl.includes('sslmode=require') ? { rejectUnauthorized: false } : undefined,
-});
-
 async function seedAdmin() {
+  const isProduction = process.env.NODE_ENV === 'production';
+  const allowProdSeed = process.env.ALLOW_PROD_SEED === 'true';
+
+  if (isProduction && !allowProdSeed) {
+    console.error('❌ Safety guard: Refusing to seed platform admin in production without ALLOW_PROD_SEED=true');
+    process.exit(1);
+  }
+
+  const targetEmail = process.env.PLATFORM_ADMIN_EMAIL?.trim().toLowerCase();
+  const targetPassword = process.env.PLATFORM_ADMIN_PASSWORD;
+
+  if (!targetEmail) {
+    console.error('❌ Missing PLATFORM_ADMIN_EMAIL environment variable.');
+    console.error('Set PLATFORM_ADMIN_EMAIL in apps/api/.env or pass it when running the command.');
+    process.exit(1);
+  }
+
+  if (!targetPassword) {
+    console.error('❌ Missing PLATFORM_ADMIN_PASSWORD environment variable.');
+    console.error('Set PLATFORM_ADMIN_PASSWORD in apps/api/.env or pass it when running the command.');
+    process.exit(1);
+  }
+
+  const dbUrl = process.env.DATABASE_URL;
+  if (!dbUrl) {
+    console.error('❌ DATABASE_URL is missing in apps/api/.env');
+    process.exit(1);
+  }
+
+  const pool = new Pool({
+    connectionString: dbUrl,
+    ssl: dbUrl.includes('sslmode=require') || dbUrl.includes('sslmode=verify-full')
+      ? { rejectUnauthorized: false }
+      : undefined,
+  });
+
   console.log('====================================================');
-  console.log(`🛡️  GymPulse Platform Admin Provisioning (TypeScript)`);
+  console.log('🛡️  GymPulse Platform Admin Provisioning');
   console.log(`Target Email: ${targetEmail}`);
   console.log('====================================================');
 
@@ -43,22 +55,40 @@ async function seedAdmin() {
       [targetEmail],
     );
 
+    let authUserId: string;
+    let authUserName: string = 'Platform Superadmin';
+
     if (userRes.rows.length === 0) {
-      console.log(`\n⚠️  User '${targetEmail}' was not found in 'auth_user'.`);
-      console.log(`To create this user:`);
-      console.log(`1. Call: POST /v1/auth/sign-up/email`);
-      console.log(`   Body: { "email": "${targetEmail}", "password": "AdminPassword123!", "name": "Platform Superadmin" }`);
-      console.log(`2. Then re-run: pnpm --filter api seed:platform-admin\n`);
-      return;
+      console.log(`Creating user '${targetEmail}' via Better Auth...`);
+      try {
+        const signUpRes = await auth.api.signUpEmail({
+          body: {
+            email: targetEmail,
+            password: targetPassword,
+            name: process.env.PLATFORM_ADMIN_NAME || 'Platform Superadmin',
+          },
+        });
+        if (!signUpRes?.user?.id) {
+          throw new Error('Failed to create auth user via Better Auth');
+        }
+        authUserId = signUpRes.user.id;
+        authUserName = signUpRes.user.name || 'Platform Superadmin';
+        console.log(`✅ 1. Created new auth user: ${authUserName} (${authUserId})`);
+      } catch (authErr: any) {
+        console.error('❌ Better Auth sign-up error:', authErr?.message || authErr);
+        process.exit(1);
+      }
+    } else {
+      const authUser = userRes.rows[0];
+      authUserId = authUser.id;
+      authUserName = authUser.name || 'Platform Superadmin';
+      console.log(`✅ 1. Found existing auth user: ${authUserName} (${authUserId})`);
     }
 
-    const authUser = userRes.rows[0];
-    console.log(`✅ 1. Found auth user: ${authUser.name} (${authUser.id})`);
-
     // 2. Ensure domain user row exists in 'users' table
-    let domainUserRes = await client.query(
+    const domainUserRes = await client.query(
       `SELECT id, full_name FROM "users" WHERE auth_user_id = $1 LIMIT 1`,
-      [authUser.id],
+      [authUserId],
     );
 
     let domainUserId: string;
@@ -68,10 +98,10 @@ async function seedAdmin() {
          VALUES ($1, $2, $3, $4)
          RETURNING id;`,
         [
-          authUser.id,
-          authUser.email,
-          authUser.name || 'Platform Superadmin',
-          (authUser.name || 'Platform Superadmin').toLowerCase(),
+          authUserId,
+          targetEmail,
+          authUserName,
+          authUserName.toLowerCase(),
         ],
       );
       domainUserId = inserted.rows[0].id;
@@ -97,11 +127,12 @@ async function seedAdmin() {
     console.log(`\n🎉 SUCCESS! User is now a Platform Superadmin!`);
     console.log(`Admin ID       : ${admin.id}`);
     console.log(`Domain User ID : ${domainUserId}`);
-    console.log(`Auth User ID   : ${authUser.id}`);
+    console.log(`Auth User ID   : ${authUserId}`);
     console.log(`Role           : ${admin.role}`);
     console.log(`Is Active      : ${admin.is_active}\n`);
   } catch (err: any) {
     console.error('❌ Seeding failed:', err.message);
+    process.exit(1);
   } finally {
     client.release();
     await pool.end();

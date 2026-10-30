@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  ForbiddenException,
   Get,
   Param,
   Post,
@@ -23,6 +24,7 @@ export class FreezesController {
 
   /**
    * Run settlement of due freezes for the gym (Daily batch job or on-demand trigger)
+   * Note: asOfDate override is strictly restricted to test environments to prevent premature completion fraud.
    */
   @Post('settle-due')
   @Roles('owner', 'manager')
@@ -30,6 +32,17 @@ export class FreezesController {
     @CurrentTenant() tenant: TenantContext,
     @Body() body?: { asOfDate?: string },
   ) {
+    if (body?.asOfDate) {
+      const isTestEnv =
+        process.env.NODE_ENV === 'test' ||
+        process.env.ALLOW_DESTRUCTIVE_TESTS === 'true';
+      if (!isTestEnv) {
+        throw new ForbiddenException({
+          code: 'DATE_OVERRIDE_FORBIDDEN',
+          message: 'The asOfDate override parameter is strictly restricted to automated test environments',
+        });
+      }
+    }
     return this.freezesService.settleDueFreezesForGym(tenant.gymId, body?.asOfDate);
   }
 

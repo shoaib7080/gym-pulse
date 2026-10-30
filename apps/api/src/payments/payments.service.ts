@@ -27,6 +27,7 @@ import {
   calculateVatInclusive,
   formatDateOnly,
   addDays,
+  computeInclusiveEndDate,
 } from '@gympulse/shared';
 import { AuditService } from '../common/audit/audit.service';
 import { scopeEntityToGym, scopeToGym } from '../common/tenant/tenant-scope.helper';
@@ -63,7 +64,7 @@ export class PaymentsService {
         code: 'VALIDATION_FAILED',
         message: 'Invalid desk payment data',
         invalidParams: parseResult.error.issues.map(
-          (i: { path: (string | number)[]; message: string }) => ({
+          (i: { path: PropertyKey[]; message: string }) => ({
             name: i.path.join('.'),
             reason: i.message,
           }),
@@ -259,15 +260,11 @@ export class PaymentsService {
             const isContinuous = today <= graceCutoff;
             const renewalStartDate = isContinuous ? addDays(mem.endDate, 1) : today;
 
-            const [y, m, d] = renewalStartDate.split('-').map(Number);
-            let newEndDate: string;
-            if (targetPlan.durationUnit === 'month') {
-              const end = new Date(Date.UTC(y, m - 1 + targetPlan.durationValue, d));
-              end.setUTCDate(end.getUTCDate() - 1);
-              newEndDate = formatDateOnly(end);
-            } else {
-              newEndDate = addDays(renewalStartDate, targetPlan.durationValue - 1);
-            }
+            const newEndDate = computeInclusiveEndDate(
+              renewalStartDate,
+              targetPlan.durationUnit,
+              targetPlan.durationValue,
+            );
 
             await tx
               .update(memberships)
@@ -359,7 +356,7 @@ export class PaymentsService {
         code: 'VALIDATION_FAILED',
         message: 'Invalid void payment data',
         invalidParams: parseResult.error.issues.map(
-          (i: { path: (string | number)[]; message: string }) => ({
+          (i: { path: PropertyKey[]; message: string }) => ({
             name: i.path.join('.'),
             reason: i.message,
           }),

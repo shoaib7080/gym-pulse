@@ -24,6 +24,7 @@ import {
 import {
   addDays,
   calculateVatInclusive,
+  computeInclusiveEndDate,
   formatDateOnly,
 } from '@gympulse/shared';
 import { AuditService } from '../common/audit/audit.service';
@@ -69,23 +70,10 @@ export class MembershipsService {
 
   /**
    * Calculate inclusive end date from start date and plan duration
-   * Spec Section 5.3: N days inclusive term: end_date = start_date + N - 1
+   * Delegates to shared month-clamping helper (Step 6 Hardening)
    */
   public computeInclusiveEndDate(startDateStr: string, durationUnit: string, durationValue: number): string {
-    const [y, m, d] = startDateStr.split('-').map(Number);
-    const start = new Date(Date.UTC(y, m - 1, d));
-
-    if (durationUnit === 'day') {
-      return addDays(startDateStr, durationValue - 1);
-    }
-
-    if (durationUnit === 'month') {
-      const end = new Date(Date.UTC(y, m - 1 + durationValue, d));
-      end.setUTCDate(end.getUTCDate() - 1);
-      return formatDateOnly(end);
-    }
-
-    return addDays(startDateStr, durationValue - 1);
+    return computeInclusiveEndDate(startDateStr, durationUnit, durationValue);
   }
 
   /**
