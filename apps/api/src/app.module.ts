@@ -18,10 +18,14 @@ import { FreezesModule } from './freezes/freezes.module';
 import { AttendanceModule } from './attendance/attendance.module';
 import { ReportsModule } from './reports/reports.module';
 import { SubscriptionsModule } from './subscriptions/subscriptions.module';
+import { StorageModule } from './common/storage/storage.module';
 import { OutboxModule } from './outbox/outbox.module';
+import { SalesModule } from './sales/sales.module';
 
 @Module({
   imports: [
+    StorageModule,
+    SalesModule,
     ConfigModule.forRoot({
       isGlobal: true,
       // Always read apps/api/.env, whichever folder the command was started from.

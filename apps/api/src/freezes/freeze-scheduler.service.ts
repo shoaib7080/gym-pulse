@@ -1,9 +1,12 @@
 import {
+  Inject,
   Injectable,
   Logger,
   type OnModuleDestroy,
   type OnModuleInit,
 } from '@nestjs/common';
+import { sql } from 'drizzle-orm';
+import { DB, type Database } from '../db/db.module';
 import { FreezesService } from './freezes.service';
 
 @Injectable()
@@ -14,7 +17,10 @@ export class FreezeSchedulerService implements OnModuleInit, OnModuleDestroy {
   // Run automated settlement every 1 hour (3600000 ms)
   private readonly intervalMs = 60 * 60 * 1000;
 
-  constructor(private readonly freezesService: FreezesService) {}
+  constructor(
+    @Inject(DB) private readonly db: Database,
+    private readonly freezesService: FreezesService,
+  ) {}
 
   onModuleInit() {
     if (process.env.DISABLE_SCHEDULER === 'true') {
@@ -48,19 +54,43 @@ export class FreezeSchedulerService implements OnModuleInit, OnModuleDestroy {
 
   /**
    * Internal job runner executing automated freeze activation, completion, and proof purge
+   * Uses cluster-wide PostgreSQL session advisory lock to ensure single execution.
    */
   async runDailySweep(asOfDate?: string) {
-    this.logger.log(`[FreezeScheduler] Executing automated freeze settlement & proof purge sweep...`);
-    const settlementResult = await this.freezesService.settleDueFreezesForAllGyms(asOfDate);
-    const purgeResult = await this.freezesService.purgeExpiredProofsForAllGyms();
-
-    this.logger.log(
-      `[FreezeScheduler] Sweep completed. Processed ${settlementResult.totalGymsProcessed} gyms, purged ${purgeResult.totalPurged} expired proofs.`,
+    // Attempt non-blocking cluster advisory lock
+    const lockRes = await this.db.execute<{ locked: boolean }>(
+      sql`SELECT pg_try_advisory_lock(hashtextextended('freeze_settlement_scheduler', 0)) AS locked`,
     );
+    const hasLock = Boolean(lockRes.rows?.[0]?.locked ?? (lockRes as any)?.[0]?.locked);
 
-    return {
-      settlement: settlementResult,
-      purge: purgeResult,
-    };
+    if (!hasLock) {
+      this.logger.log(
+        '[FreezeScheduler] Another worker holds the advisory lock; skipping sweep.',
+      );
+      return { skipped: true, reason: 'LOCKED_BY_ANOTHER_WORKER' };
+    }
+
+    try {
+      this.logger.log(`[FreezeScheduler] Acquired lock. Executing automated freeze settlement & proof purge sweep...`);
+      const settlementResult = await this.freezesService.settleDueFreezesForAllGyms(asOfDate);
+      const purgeResult = await this.freezesService.purgeExpiredProofsForAllGyms(asOfDate);
+
+      this.logger.log(
+        `[FreezeScheduler] Sweep completed. Processed ${settlementResult.totalGymsProcessed} gyms, purged ${purgeResult.totalPurged} expired proofs.`,
+      );
+
+      return {
+        settlement: settlementResult,
+        purge: purgeResult,
+      };
+    } finally {
+      try {
+        await this.db.execute(
+          sql`SELECT pg_advisory_unlock(hashtextextended('freeze_settlement_scheduler', 0))`,
+        );
+      } catch (unlockErr: any) {
+        this.logger.warn(`Failed releasing advisory lock: ${unlockErr?.message}`);
+      }
+    }
   }
 }

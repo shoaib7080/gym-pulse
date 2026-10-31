@@ -3,6 +3,8 @@ import {
   Controller,
   Get,
   Headers,
+  HttpException,
+  HttpStatus,
   Param,
   Post,
   UseGuards,
@@ -25,7 +27,7 @@ import { ActiveGymGuard } from '../common/guards/active-gym.guard';
 import type { CreateFreezeInput, FreezePreviewInput } from '@gympulse/shared';
 
 @Controller('memberships')
-@UseGuards(AuthGuard, TenantGuard, RolesGuard)
+@UseGuards(AuthGuard, TenantGuard, RolesGuard, ActiveGymGuard)
 export class MembershipsController {
   constructor(
     private readonly membershipsService: MembershipsService,
@@ -33,17 +35,20 @@ export class MembershipsController {
   ) {}
 
   /**
-   * Provision a membership for a member (Requires active verified gym)
+   * Provision a membership for a member - DEPRECATED (Use POST /v1/sales/memberships)
    */
   @Post()
   @UseGuards(ActiveGymGuard)
   @Roles('owner', 'manager', 'front_desk')
-  async createMembership(
-    @CurrentTenant() tenant: TenantContext,
-    @CurrentUser() user: { id: string },
-    @Body() body: CreateMembershipDto,
-  ) {
-    return this.membershipsService.createMembership(tenant.gymId, body, user?.id);
+  async createMembership() {
+    throw new HttpException(
+      {
+        code: 'MEMBERSHIP_SALE_REQUIRED',
+        message:
+          'Direct membership creation without an atomic sale is deprecated. Use POST /v1/sales/memberships',
+      },
+      HttpStatus.GONE, // 410
+    );
   }
 
   /**
@@ -120,17 +125,19 @@ export class MembershipsController {
   }
 
   /**
-   * Renew membership with date continuity (Spec Section 6.3)
+   * Renew membership - DEPRECATED (Use POST /v1/sales/renewals)
    */
   @Post(':id/renew')
   @Roles('owner', 'manager', 'front_desk')
-  async renewMembership(
-    @CurrentTenant() tenant: TenantContext,
-    @CurrentUser() user: { id: string },
-    @Param('id') membershipId: string,
-    @Body() body: RenewMembershipDto,
-  ) {
-    return this.membershipsService.renewMembership(tenant.gymId, membershipId, body, user?.id);
+  async renewMembership() {
+    throw new HttpException(
+      {
+        code: 'RENEWAL_SALE_REQUIRED',
+        message:
+          'Direct membership renewal is deprecated. Use POST /v1/sales/renewals',
+      },
+      HttpStatus.GONE, // 410
+    );
   }
 
   /**

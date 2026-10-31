@@ -57,6 +57,8 @@ interface AuthContextType {
   userGyms: UserGymAssignment[];
   activeGymId: string | null;
   activeGym: GymDetails | null;
+  userRole: 'owner' | 'manager' | 'front_desk' | null;
+  branchScope: 'all' | 'selected' | null;
   setActiveGymId: (gymId: string) => void;
   signIn: (email: string, password: string) => Promise<{ success: boolean; error?: string }>;
   signUp: (name: string, email: string, password: string) => Promise<{ success: boolean; error?: string }>;
@@ -64,6 +66,7 @@ interface AuthContextType {
   refreshGyms: () => Promise<void>;
   fetchGyms: () => Promise<void>;
   createGym: (data: CreateGymPayload) => Promise<{ success: boolean; gymId?: string; error?: string }>;
+  resubmitGym: (gymId: string) => Promise<{ success: boolean; error?: string }>;
   apiFetch: (path: string, options?: RequestInit) => Promise<Response>;
 }
 
@@ -131,6 +134,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // Mandatory multi-tenant context header for TenantGuard
       if (activeGymId && !headers.has('x-gym-id')) {
         headers.set('x-gym-id', activeGymId);
+      }
+
+      // Automatically generate Idempotency-Key for mutating financial requests if not provided
+      const method = (options.method || 'GET').toUpperCase();
+      const isMutating = ['POST', 'PUT', 'PATCH'].includes(method);
+      const isFinancialOrCritical =
+        path.includes('/sales/') ||
+        path.includes('/payments/') ||
+        path.includes('/freezes') ||
+        path.includes('/shifts/');
+
+      if (isMutating && isFinancialOrCritical && !headers.has('Idempotency-Key')) {
+        const idKey = typeof crypto !== 'undefined' && crypto.randomUUID
+          ? crypto.randomUUID()
+          : `${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+        headers.set('Idempotency-Key', idKey);
       }
 
       const res = await fetch(path, {
@@ -451,8 +470,34 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   };
 
-  // Determine current active gym object from userGyms
-  const activeGym = userGyms.find((g) => g.gymId === activeGymId)?.gym || null;
+  // Resubmit gym for verification after rejection
+  const resubmitGym = async (gymId: string): Promise<{ success: boolean; error?: string }> => {
+    try {
+      const res = await apiFetch(`/v1/gyms/${gymId}/resubmit`, {
+        method: 'POST',
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        return {
+          success: false,
+          error: data?.message || 'Failed to resubmit gym for verification.',
+        };
+      }
+      await fetchUserGyms();
+      return { success: true };
+    } catch (err: any) {
+      return {
+        success: false,
+        error: err.message || 'Network error resubmitting gym for verification.',
+      };
+    }
+  };
+
+  // Determine current active gym object & role assignment from userGyms
+  const activeAssignment = userGyms.find((g) => g.gymId === activeGymId) || null;
+  const activeGym = activeAssignment?.gym || null;
+  const userRole = activeAssignment?.role || null;
+  const branchScope = activeAssignment?.branchScope || null;
 
   return (
     <AuthContext.Provider
@@ -465,6 +510,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         userGyms,
         activeGymId,
         activeGym,
+        userRole,
+        branchScope,
         setActiveGymId,
         signIn,
         signUp,
@@ -472,6 +519,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         refreshGyms: fetchUserGyms,
         fetchGyms: fetchUserGyms,
         createGym,
+        resubmitGym,
         apiFetch,
       }}
     >

@@ -18,21 +18,6 @@ export class AuthGuard implements CanActivate {
   async canActivate(context: ExecutionContext): Promise<boolean> {
     const req = context.switchToHttp().getRequest();
     const headers = fromNodeHeaders(req.headers);
-    const authHeader = req.headers['authorization'];
-    if (authHeader && typeof authHeader === 'string' && authHeader.startsWith('Bearer ')) {
-      const token = authHeader.slice(7).trim();
-      if (token && token !== 'undefined') {
-        const existingCookie = req.headers['cookie'] || '';
-        if (!existingCookie.includes('better-auth.session_token=')) {
-          headers.set(
-            'cookie',
-            existingCookie
-              ? `${existingCookie}; better-auth.session_token=${token}`
-              : `better-auth.session_token=${token}`,
-          );
-        }
-      }
-    }
 
     const session = await auth.api.getSession({
       headers,

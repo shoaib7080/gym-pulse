@@ -11,9 +11,10 @@ import { Roles } from '../common/decorators/roles.decorator';
 import { CurrentTenant, type TenantContext } from '../common/decorators/current-tenant.decorator';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { ReportsService } from './reports.service';
+import { ActiveGymGuard } from '../common/guards/active-gym.guard';
 
 @Controller('reports')
-@UseGuards(AuthGuard, TenantGuard, RolesGuard)
+@UseGuards(AuthGuard, TenantGuard, RolesGuard, ActiveGymGuard)
 export class ReportsController {
   constructor(private readonly reportsService: ReportsService) {}
 

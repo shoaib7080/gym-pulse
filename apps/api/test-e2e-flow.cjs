@@ -1159,18 +1159,35 @@ async function run() {
   assert(selfTapFrozenRes.status === 400, 'Self-tap blocked while frozen');
   assert(selfTapFrozenRes.body.code === 'FREEZE_ACTIVE', 'Blocked with RFC 7807 code FREEZE_ACTIVE');
 
-  // Early lift by front desk with manager PIN
+  // Manager PIN: Reject trivial PINs and configure a secure PIN (Step 1 of Hardening Guide)
+  const trivialPinRes = await request(
+    'PUT',
+    '/gyms/manager-pin',
+    { pin: '1234' },
+    tenantHeaders,
+  );
+  assert(trivialPinRes.status === 400, 'Trivial sequential PIN (1234) rejected with 400');
+
+  const setPinRes = await request(
+    'PUT',
+    '/gyms/manager-pin',
+    { pin: '8392' },
+    tenantHeaders,
+  );
+  assert(setPinRes.status === 200, 'Secure Manager PIN configured successfully');
+  assert(setPinRes.body.success === true, 'Returns success confirmation without leaking PIN');
+
+  // Early lift by owner/manager
   const earlyLiftRes = await request(
     'POST',
     `/freezes/${activeFreezeId}/lift`,
     {
       liftedOnDate: liftDateStr, // Returned after 4 days
-      managerPin: '1234',
       reason: 'Member recovered earlier than expected',
     },
     tenantHeaders,
   );
-  assert(earlyLiftRes.status === 201 || earlyLiftRes.status === 200, 'Lifted freeze early with Manager PIN');
+  assert(earlyLiftRes.status === 201 || earlyLiftRes.status === 200, 'Lifted freeze early');
   assert(earlyLiftRes.body.freeze.status === 'early_lifted', 'Freeze status updated to early_lifted');
   // Policy minDays is 7, member used 4 days
   // daysCharged = min(10, max(4, 7)) = 7 days.
@@ -1182,7 +1199,7 @@ async function run() {
     'POST',
     `/freezes/${activeFreezeId}/lift`,
     {
-      managerPin: '1234',
+      liftedOnDate: liftDateStr,
     },
     tenantHeaders,
   );
@@ -1194,6 +1211,16 @@ async function run() {
     earlyLiftTwiceRes.body.code === 'FREEZE_NOT_ACTIVE' || earlyLiftTwiceRes.body.code === 'FREEZE_ALREADY_LIFTED',
     'Lifting twice rejected with FREEZE_NOT_ACTIVE or FREEZE_ALREADY_LIFTED',
   );
+
+  // Cryptographic audit chain verification for this gym
+  const auditVerifyRes = await request(
+    'POST',
+    '/gyms/audit-logs/verify',
+    null,
+    tenantHeaders,
+  );
+  assert(auditVerifyRes.status === 201 || auditVerifyRes.status === 200, 'Audit verification endpoint succeeded');
+  assert(auditVerifyRes.body.isValid === true, 'Gym audit chain is cryptographically intact');
 
   // Verify membership restored to 'active' status and adjustment ledger recorded
   const restoredMembershipRes = await request('GET', `/memberships/${m2MembershipId}`, null, tenantHeaders);

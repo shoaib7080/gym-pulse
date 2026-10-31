@@ -9,10 +9,12 @@ import { AccessController } from './access.controller';
 
 import { SubscriptionsModule } from '../subscriptions/subscriptions.module';
 
+import { ActiveGymGuard } from '../common/guards/active-gym.guard';
+
 @Module({
   imports: [DbModule, AuditModule, FreezesModule, SubscriptionsModule],
   controllers: [AttendanceController, AccessController],
-  providers: [CheckInService, AttendanceService],
+  providers: [CheckInService, AttendanceService, ActiveGymGuard],
   exports: [CheckInService, AttendanceService],
 })
 export class AttendanceModule {}

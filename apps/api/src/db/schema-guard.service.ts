@@ -14,7 +14,7 @@ export class SchemaGuard implements OnModuleInit {
 
   /**
    * Read-only schema verification gate.
-   * Runs SELECT queries to confirm required extensions and constraints exist without needing DDL privileges.
+   * Runs SELECT queries to confirm required extensions, constraints, and immutability triggers exist without needing DDL privileges.
    */
   async verifySchema() {
     try {
@@ -35,10 +35,26 @@ export class SchemaGuard implements OnModuleInit {
       const hasNoOverlap = existingConstraints.has('no_overlapping_freezes');
       const hasFreezeDatesValid = existingConstraints.has('freeze_dates_valid');
 
+      // 3. Check append-only triggers on immutable tables (Step 7)
+      const trigRes = await this.db.execute<{ tgname: string }>(
+        sql`SELECT tgname FROM pg_trigger WHERE tgname IN ('audit_logs_immutable', 'invoices_immutable', 'membership_adjustments_immutable', 'check_ins_immutable');`,
+      );
+      const trigRows = (trigRes as any)?.rows || (Array.isArray(trigRes) ? trigRes : []);
+      const existingTriggers = new Set(trigRows.map((r: any) => r.tgname));
+
+      const hasAuditTrigger = existingTriggers.has('audit_logs_immutable');
+      const hasInvoiceTrigger = existingTriggers.has('invoices_immutable');
+      const hasAdjustmentTrigger = existingTriggers.has('membership_adjustments_immutable');
+      const hasCheckInTrigger = existingTriggers.has('check_ins_immutable');
+
       const missing: string[] = [];
       if (!hasBtreeGist) missing.push("PostgreSQL extension 'btree_gist'");
       if (!hasNoOverlap) missing.push("constraint 'no_overlapping_freezes'");
       if (!hasFreezeDatesValid) missing.push("constraint 'freeze_dates_valid'");
+      if (!hasAuditTrigger) missing.push("trigger 'audit_logs_immutable'");
+      if (!hasInvoiceTrigger) missing.push("trigger 'invoices_immutable'");
+      if (!hasAdjustmentTrigger) missing.push("trigger 'membership_adjustments_immutable'");
+      if (!hasCheckInTrigger) missing.push("trigger 'check_ins_immutable'");
 
       if (missing.length > 0) {
         const errorMsg = `[SchemaGuard] Missing required database schema objects: ${missing.join(', ')}. Please run 'pnpm --filter api db:migrate'.`;
@@ -48,7 +64,7 @@ export class SchemaGuard implements OnModuleInit {
           this.logger.error(errorMsg);
         }
       } else {
-        this.logger.log('✓ Read-only schema guard verified: btree_gist extension and freeze constraints are active.');
+        this.logger.log('✓ Read-only schema guard verified: extensions, freeze constraints, and immutable triggers are active.');
       }
     } catch (err: any) {
       if (process.env.NODE_ENV === 'production') {

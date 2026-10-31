@@ -56,17 +56,6 @@ export class PlatformController {
   }
 
   /**
-   * Get single gym details (branches, staff, member count, license info)
-   * Returns counts, not member lists.
-   * Accessible by: superadmin only
-   */
-  @Get('gyms/:id')
-  @PlatformRoles('superadmin')
-  async getGymById(@Param('id') gymId: string) {
-    return this.platformService.getGymById(gymId);
-  }
-
-  /**
    * Platform Verification Review Queue:
    * View all gyms pending verification with their trade license, TRN, and uploaded documents
    * Accessible by: superadmin only
@@ -81,6 +70,17 @@ export class PlatformController {
   @PlatformRoles('superadmin')
   async getGymsReviewQueue() {
     return this.platformService.getReviewQueue();
+  }
+
+  /**
+   * Get single gym details (branches, staff, member count, license info)
+   * Returns counts, not member lists.
+   * Accessible by: superadmin only
+   */
+  @Get('gyms/:id')
+  @PlatformRoles('superadmin')
+  async getGymById(@Param('id') gymId: string) {
+    return this.platformService.getGymById(gymId);
   }
 
   /**
@@ -188,6 +188,16 @@ export class PlatformController {
   @PlatformRoles('superadmin', 'support', 'auditor')
   async getPlatformAuditLogs(@Query('limit') limit?: number) {
     return this.platformService.getPlatformAuditLogs(limit ? Number(limit) : 100);
+  }
+
+  /**
+   * Cryptographic SHA-256 hash chain verification for the platform chain
+   * Accessible by: superadmin
+   */
+  @Post('audit-logs/verify')
+  @PlatformRoles('superadmin')
+  async verifyPlatformAuditChain(@Query('limit') limit?: number) {
+    return this.platformService.verifyPlatformAuditChain(limit ? Number(limit) : 100);
   }
 }
 

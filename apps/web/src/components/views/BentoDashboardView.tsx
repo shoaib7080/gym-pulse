@@ -237,12 +237,13 @@ export function BentoDashboardView() {
         });
         loadDashboardTelemetry();
       } else {
+        const errorMsg =
+          data?.code === "GYM_NOT_ACTIVE"
+            ? "Access gates paused: Facility verification is pending approval."
+            : data?.reason || data?.message || "Access Denied: No active membership found.";
         setCheckinResult({
           allowed: false,
-          message:
-            data?.reason ||
-            data?.message ||
-            "Access Denied: No active membership found.",
+          message: errorMsg,
         });
       }
     } catch {

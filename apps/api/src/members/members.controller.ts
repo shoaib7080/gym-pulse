@@ -19,7 +19,7 @@ import { MembersService } from './members.service';
 import { ActiveGymGuard } from '../common/guards/active-gym.guard';
 
 @Controller('members')
-@UseGuards(AuthGuard, TenantGuard, RolesGuard)
+@UseGuards(AuthGuard, TenantGuard, RolesGuard, ActiveGymGuard)
 export class MembersController {
   constructor(private readonly membersService: MembersService) {}
 
@@ -28,7 +28,6 @@ export class MembersController {
    * Accessible by Owner, Manager, and Front Desk
    */
   @Post()
-  @UseGuards(ActiveGymGuard)
   @Roles('owner', 'manager', 'front_desk')
   async createMember(
     @CurrentTenant() tenant: TenantContext,

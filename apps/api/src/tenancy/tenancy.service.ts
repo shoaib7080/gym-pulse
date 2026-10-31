@@ -12,6 +12,7 @@ import {
   gymDocuments,
   gymPaymentAccounts,
   gyms,
+  managerPins,
   staffAssignments,
   staffBranchAccess,
   users,
@@ -21,9 +22,11 @@ import {
   type CreateGymInput,
   assignStaffSchema,
   type AssignStaffInput,
+  setManagerPinSchema,
 } from '@gympulse/shared';
 import { AuditService } from '../common/audit/audit.service';
 import { encryptAes256Gcm } from '../common/crypto/aes-gcm';
+import { hashPin } from '../common/crypto/pin-hasher';
 import { PlatformSecretsService } from '../common/secrets/platform-secrets.service';
 import { scopeEntityToGym, scopeToGym } from '../common/tenant/tenant-scope.helper';
 
@@ -123,19 +126,27 @@ export class TenancyService {
       domainUser = created;
     }
 
-    // Cap: A user may create and own only one gym during Phase 1
-    const existingOwnership = await this.db.query.staffAssignments.findFirst({
-      where: and(
-        eq(staffAssignments.userId, domainUser.id),
-        eq(staffAssignments.role, 'owner'),
-        eq(staffAssignments.isActive, true),
-      ),
-    });
+    // Cap: A user may create and own only one gym with active/pending/suspended status during Phase 1
+    const existingOwnerships = await this.db
+      .select({
+        id: staffAssignments.id,
+        gymStatus: gyms.status,
+      })
+      .from(staffAssignments)
+      .innerJoin(gyms, eq(staffAssignments.gymId, gyms.id))
+      .where(
+        and(
+          eq(staffAssignments.userId, domainUser.id),
+          eq(staffAssignments.role, 'owner'),
+          eq(staffAssignments.isActive, true),
+          inArray(gyms.status, ['pending_verification', 'active', 'suspended']),
+        ),
+      );
 
-    if (existingOwnership) {
+    if (existingOwnerships.length > 0) {
       throw new BadRequestException({
         code: 'GYM_CREATION_LIMIT_EXCEEDED',
-        message: 'A user may only create and own one gym during Phase 1',
+        message: 'A user may only create and own one active or pending gym',
       });
     }
 
@@ -197,25 +208,29 @@ export class TenancyService {
         })
         .returning();
 
+      // 4. Append tamper-evident audit record inside transaction
+      await this.auditService.log(
+        {
+          gymId: newGym.id,
+          actorUserId: domainUser.id,
+          actorRole: 'owner',
+          action: 'gym.create',
+          entityType: 'gym',
+          entityId: newGym.id,
+          payload: {
+            legalName: newGym.legalName,
+            tradeName: newGym.tradeName,
+            currency: newGym.currency,
+          },
+        },
+        tx,
+      );
+
       return {
         gym: newGym,
         defaultBranch,
         staffAssignment: assignment,
       };
-    });
-
-    // 4. Append tamper-evident audit record
-    await this.auditService.log({
-      gymId: result.gym.id,
-      actorUserId: domainUser.id,
-      action: 'gym.create',
-      entityType: 'gym',
-      entityId: result.gym.id,
-      payload: {
-        legalName: result.gym.legalName,
-        tradeName: result.gym.tradeName,
-        currency: result.gym.currency,
-      },
     });
 
     return result;
@@ -889,6 +904,23 @@ export class TenancyService {
       });
     }
 
+    // Validate IANA timezone if provided
+    if (input.timezone) {
+      try {
+        Intl.DateTimeFormat(undefined, { timeZone: input.timezone });
+      } catch {
+        throw new BadRequestException({
+          code: 'VALIDATION_FAILED',
+          message: `Invalid IANA timezone: '${input.timezone}'`,
+        });
+      }
+    }
+
+    // Reverification rail: If gym is currently active, and modifying tradeLicenseNumber or trnNumber
+    const touchesTrn = input.trnNumber !== undefined && input.trnNumber !== gym.trnNumber;
+    const touchesLicense = input.tradeLicenseNumber !== undefined && input.tradeLicenseNumber !== gym.tradeLicenseNumber;
+    const requiresReverification = gym.status === 'active' && (touchesTrn || touchesLicense);
+
     const [updated] = await this.db
       .update(gyms)
       .set({
@@ -899,6 +931,7 @@ export class TenancyService {
         ...(input.trnNumber !== undefined ? { trnNumber: input.trnNumber } : {}),
         ...(input.timezone ? { timezone: input.timezone } : {}),
         ...(input.settings ? { settings: { ...(gym.settings as any), ...input.settings } } : {}),
+        ...(requiresReverification ? { status: 'pending_verification' } : {}),
         updatedAt: new Date(),
       })
       .where(eq(gyms.id, gymId))
@@ -912,6 +945,95 @@ export class TenancyService {
       entityId: gymId,
       payload: {
         updatedFields: Object.keys(input),
+      },
+    });
+
+    if (requiresReverification) {
+      await this.auditService.log({
+        gymId,
+        actorUserId: actorUserId ?? null,
+        action: 'gym.reverification_triggered',
+        entityType: 'gym',
+        entityId: gymId,
+        payload: {
+          previousStatus: gym.status,
+          newStatus: 'pending_verification',
+          reason: 'Legal licensing or TRN modification on active gym requires platform re-verification',
+          touchesTrn,
+          touchesLicense,
+        },
+      });
+    }
+
+    return updated;
+  }
+
+  /**
+   * Resubmit a rejected gym for platform verification review
+   * Owner only.
+   */
+  async resubmitGym(gymId: string, actorUserId: string) {
+    let domainUserId = actorUserId;
+    const userRow = await this.db.query.users.findFirst({
+      where: or(eq(users.id, actorUserId), eq(users.authUserId, actorUserId)),
+    });
+    if (userRow) {
+      domainUserId = userRow.id;
+    }
+
+    const ownership = await this.db.query.staffAssignments.findFirst({
+      where: and(
+        eq(staffAssignments.gymId, gymId),
+        eq(staffAssignments.userId, domainUserId),
+        eq(staffAssignments.role, 'owner'),
+        eq(staffAssignments.isActive, true),
+      ),
+    });
+
+    if (!ownership) {
+      throw new BadRequestException({
+        code: 'FORBIDDEN',
+        message: 'Only the gym owner may resubmit this gym for verification',
+      });
+    }
+
+    const gym = await this.db.query.gyms.findFirst({
+      where: eq(gyms.id, gymId),
+    });
+
+    if (!gym) {
+      throw new BadRequestException({
+        code: 'RESOURCE_NOT_FOUND',
+        message: 'Gym not found',
+      });
+    }
+
+    if (gym.status !== 'rejected') {
+      throw new BadRequestException({
+        code: 'INVALID_STATUS_TRANSITION',
+        message: `Only rejected gyms can be resubmitted. Current status is '${gym.status}'`,
+      });
+    }
+
+    const [updated] = await this.db
+      .update(gyms)
+      .set({
+        status: 'pending_verification',
+        updatedAt: new Date(),
+      })
+      .where(eq(gyms.id, gymId))
+      .returning();
+
+    await this.auditService.log({
+      gymId,
+      actorUserId: domainUserId,
+      actorRole: 'owner',
+      action: 'gym.resubmit',
+      entityType: 'gym',
+      entityId: gymId,
+      payload: {
+        previousStatus: 'rejected',
+        newStatus: 'pending_verification',
       },
     });
 
@@ -977,9 +1099,110 @@ export class TenancyService {
   }
 
   /**
-   * Verify SHA-256 chain integrity
+   * Set or update manager PIN for step-up authorizations
+   * Rejects trivial PINs, hashes with scrypt, resets lockouts, and records audit inside transaction.
    */
-  async verifyAuditChain() {
-    return await this.auditService.verifyChainIntegrity();
+  async setManagerPin(gymId: string, actorUserId: string, rawInput: unknown) {
+    const parseResult = setManagerPinSchema.safeParse(rawInput);
+    if (!parseResult.success) {
+      throw new BadRequestException({
+        code: 'VALIDATION_FAILED',
+        message: parseResult.error.issues[0]?.message || 'Invalid manager PIN',
+        errors: parseResult.error.issues,
+      });
+    }
+
+    const { pin } = parseResult.data;
+    const pinHash = await hashPin(pin);
+
+    return await this.db.transaction(async (tx) => {
+      // Find domain user id if actorUserId might be authUserId or domain userId
+      let domainUserId = actorUserId;
+      const userRow = await tx.query.users.findFirst({
+        where: or(eq(users.id, actorUserId), eq(users.authUserId, actorUserId)),
+      });
+      if (userRow) {
+        domainUserId = userRow.id;
+      }
+
+      // Verify caller is active owner or manager of this gym
+      const staff = await tx.query.staffAssignments.findFirst({
+        where: and(
+          eq(staffAssignments.gymId, gymId),
+          eq(staffAssignments.userId, domainUserId),
+          eq(staffAssignments.isActive, true),
+        ),
+      });
+
+      if (!staff || (staff.role !== 'owner' && staff.role !== 'manager')) {
+        throw new BadRequestException({
+          code: 'UNAUTHORIZED_MANAGER_PIN',
+          message: 'Only active owners or managers of this gym can configure a manager PIN',
+        });
+      }
+
+      // Check existing PIN record
+      const existing = await tx.query.managerPins.findFirst({
+        where: and(
+          eq(managerPins.gymId, gymId),
+          eq(managerPins.userId, domainUserId),
+        ),
+      });
+
+      let pinRecordId: string;
+      if (existing) {
+        const [updated] = await tx
+          .update(managerPins)
+          .set({
+            pinHash,
+            failedAttempts: 0,
+            lockedUntil: null,
+            updatedAt: new Date(),
+          })
+          .where(eq(managerPins.id, existing.id))
+          .returning();
+        pinRecordId = updated.id;
+      } else {
+        const [inserted] = await tx
+          .insert(managerPins)
+          .values({
+            gymId,
+            userId: domainUserId,
+            pinHash,
+            failedAttempts: 0,
+            lockedUntil: null,
+          })
+          .returning();
+        pinRecordId = inserted.id;
+      }
+
+      // Fail-closed audit log inside business transaction (PIN / hash is NEVER logged)
+      await this.auditService.log(
+        {
+          gymId,
+          actorUserId: domainUserId,
+          actorRole: staff.role,
+          action: 'manager_pin.update',
+          entityType: 'manager_pin',
+          entityId: pinRecordId,
+          payload: {
+            updated: !!existing,
+          },
+        },
+        tx,
+      );
+
+      return {
+        success: true,
+        message: 'Manager PIN configured successfully',
+      };
+    });
+  }
+
+  /**
+   * Verify SHA-256 chain integrity for this gym
+   */
+  async verifyAuditChain(gymId: string) {
+    return await this.auditService.verifyChainIntegrity(gymId);
   }
 }

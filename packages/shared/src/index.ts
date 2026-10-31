@@ -8,6 +8,8 @@ export * from './schemas/members.js';
 export * from './schemas/shifts.js';
 export * from './schemas/payments.js';
 export * from './schemas/freezes.js';
+export * from './schemas/manager-pin.js';
 export * from './schemas/auth.js';
+export * from './schemas/sales.js';
 export * from './utils/dates.js';
 export * from './utils/money.js';

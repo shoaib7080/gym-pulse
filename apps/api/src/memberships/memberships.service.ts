@@ -172,20 +172,23 @@ export class MembershipsService {
         createdBy: toUuidOrNull(actorUserId),
       });
 
-      // 8. Append audit log
-      await this.auditService.log({
-        gymId,
-        actorUserId: actorUserId ?? null,
-        action: 'membership.create',
-        entityType: 'membership',
-        entityId: newMembership.id,
-        payload: {
-          memberId: member.id,
-          planTitle: plan.title,
-          startDate,
-          endDate,
+      // 8. Append audit log inside transaction
+      await this.auditService.log(
+        {
+          gymId,
+          actorUserId: actorUserId ?? null,
+          action: 'membership.create',
+          entityType: 'membership',
+          entityId: newMembership.id,
+          payload: {
+            memberId: member.id,
+            planTitle: plan.title,
+            startDate,
+            endDate,
+          },
         },
-      });
+        tx,
+      );
 
       return newMembership;
     });
@@ -290,20 +293,23 @@ export class MembershipsService {
         createdBy: toUuidOrNull(actorUserId),
       });
 
-      // 3. Append audit log
-      await this.auditService.log({
-        gymId,
-        actorUserId: actorUserId ?? null,
-        action: 'membership.adjust',
-        entityType: 'membership',
-        entityId: membershipId,
-        payload: {
-          previousEndDate,
-          newEndDate,
-          daysAdjusted: input.days,
-          reason: input.reason,
+      // 3. Append audit log inside transaction
+      await this.auditService.log(
+        {
+          gymId,
+          actorUserId: actorUserId ?? null,
+          action: 'membership.adjust',
+          entityType: 'membership',
+          entityId: membershipId,
+          payload: {
+            previousEndDate,
+            newEndDate,
+            daysAdjusted: input.days,
+            reason: input.reason,
+          },
         },
-      });
+        tx,
+      );
 
       return updated;
     });
@@ -569,38 +575,44 @@ export class MembershipsService {
         createdBy: toUuidOrNull(actorUserId),
       });
 
-      // 6. Append audit logs
-      await this.auditService.log({
-        gymId,
-        actorUserId: actorUserId ?? null,
-        action: 'payment.desk_sale',
-        entityType: 'payment',
-        entityId: payment.id,
-        payload: {
-          purpose: 'renewal',
-          membershipId,
-          method: paymentMethod,
-          totalMinor: Number(vatBreakdown.totalMinor),
-          invoiceNumber,
+      // 6. Append audit logs inside transaction
+      await this.auditService.log(
+        {
+          gymId,
+          actorUserId: actorUserId ?? null,
+          action: 'payment.desk_sale',
+          entityType: 'payment',
+          entityId: payment.id,
+          payload: {
+            purpose: 'renewal',
+            membershipId,
+            method: paymentMethod,
+            totalMinor: Number(vatBreakdown.totalMinor),
+            invoiceNumber,
+          },
         },
-      });
+        tx,
+      );
 
-      await this.auditService.log({
-        gymId,
-        actorUserId: actorUserId ?? null,
-        action: 'membership.renew',
-        entityType: 'membership',
-        entityId: membershipId,
-        payload: {
-          previousEndDate,
-          newEndDate,
-          isContinuous,
-          renewalStartDate,
-          planTitle: plan.title,
-          paymentId: payment.id,
-          wasFrozen: isFrozen,
+      await this.auditService.log(
+        {
+          gymId,
+          actorUserId: actorUserId ?? null,
+          action: 'membership.renew',
+          entityType: 'membership',
+          entityId: membershipId,
+          payload: {
+            previousEndDate,
+            newEndDate,
+            isContinuous,
+            renewalStartDate,
+            planTitle: plan.title,
+            paymentId: payment.id,
+            wasFrozen: isFrozen,
+          },
         },
-      });
+        tx,
+      );
 
       return {
         ...updated,
@@ -723,21 +735,24 @@ export class MembershipsService {
         });
       }
 
-      // 4. Audit log
-      await this.auditService.log({
-        gymId,
-        actorUserId: actorUserId ?? null,
-        action: 'membership.cancel',
-        entityType: 'membership',
-        entityId: membershipId,
-        payload: {
-          cancelEffectiveDate,
-          isImmediate,
-          wasFrozen,
-          endDateChanged: shouldTruncateEndDate,
-          reason: input.reason.trim(),
+      // 4. Audit log inside transaction (fail-closed)
+      await this.auditService.log(
+        {
+          gymId,
+          actorUserId: actorUserId ?? null,
+          action: 'membership.cancel',
+          entityType: 'membership',
+          entityId: membershipId,
+          payload: {
+            cancelEffectiveDate,
+            isImmediate,
+            wasFrozen,
+            endDateChanged: shouldTruncateEndDate,
+            reason: input.reason.trim(),
+          },
         },
-      });
+        tx,
+      );
 
       return updated;
     });

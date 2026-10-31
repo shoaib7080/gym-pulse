@@ -7,11 +7,12 @@ import { AuthGuard } from '../common/guards/auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
 
 import { ActiveGymGuard } from '../common/guards/active-gym.guard';
+import { BranchAccessService } from './branch-access.service';
 
 @Module({
   imports: [DbModule],
   controllers: [BranchesController],
-  providers: [BranchesService, TenantGuard, AuthGuard, RolesGuard, ActiveGymGuard],
-  exports: [BranchesService],
+  providers: [BranchesService, BranchAccessService, TenantGuard, AuthGuard, RolesGuard, ActiveGymGuard],
+  exports: [BranchesService, BranchAccessService],
 })
 export class BranchesModule {}

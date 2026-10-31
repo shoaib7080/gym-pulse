@@ -14,9 +14,10 @@ import { Roles } from '../common/decorators/roles.decorator';
 import { CurrentTenant, type TenantContext } from '../common/decorators/current-tenant.decorator';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { ShiftsService } from './shifts.service';
+import { ActiveGymGuard } from '../common/guards/active-gym.guard';
 
 @Controller('shifts')
-@UseGuards(AuthGuard, TenantGuard, RolesGuard)
+@UseGuards(AuthGuard, TenantGuard, RolesGuard, ActiveGymGuard)
 export class ShiftsController {
   constructor(private readonly shiftsService: ShiftsService) {}
 

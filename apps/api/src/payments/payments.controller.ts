@@ -17,7 +17,7 @@ import { PaymentsService } from './payments.service';
 import { ActiveGymGuard } from '../common/guards/active-gym.guard';
 
 @Controller('payments')
-@UseGuards(AuthGuard, TenantGuard, RolesGuard)
+@UseGuards(AuthGuard, TenantGuard, RolesGuard, ActiveGymGuard)
 export class PaymentsController {
   constructor(private readonly paymentsService: PaymentsService) {}
 
@@ -26,14 +26,13 @@ export class PaymentsController {
    * Generates sequential gapless tax invoice and activates membership
    */
   @Post('desk')
-  @UseGuards(ActiveGymGuard)
   @Roles('owner', 'manager', 'front_desk')
   async createDeskPayment(
     @CurrentTenant() tenant: TenantContext,
     @CurrentUser() user: { id: string },
     @Body() body: unknown,
   ) {
-    return this.paymentsService.createDeskPayment(tenant.gymId, body, user?.id);
+    return this.paymentsService.createDeskPayment(tenant.gymId, body, user?.id, tenant.role);
   }
 
   /**
@@ -49,16 +48,16 @@ export class PaymentsController {
   }
 
   /**
-   * Void a payment (Owner or Manager only)
+   * Void a payment (Owner only with mandatory reason and open shift)
    */
   @Post(':id/void')
-  @Roles('owner', 'manager')
+  @Roles('owner')
   async voidPayment(
     @CurrentTenant() tenant: TenantContext,
     @CurrentUser() user: { id: string },
     @Param('id') paymentId: string,
     @Body() body: unknown,
   ) {
-    return this.paymentsService.voidPayment(tenant.gymId, paymentId, body, user?.id);
+    return this.paymentsService.voidPayment(tenant.gymId, paymentId, body, user?.id, tenant.role);
   }
 }

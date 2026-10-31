@@ -26,17 +26,34 @@ interface HeaderProps {
 }
 
 export function Header({ onSearchClick, onRegisterGymClick }: HeaderProps) {
-  const { user, userGyms, activeGym, activeGymId, setActiveGymId, signOut } = useAuth();
+  const { user, userGyms, activeGym, activeGymId, userRole, branchScope, setActiveGymId, resubmitGym, signOut } = useAuth();
 
   const [selectedBranch, setSelectedBranch] = useState("Downtown Flagship");
   const [isBranchDropdownOpen, setIsBranchDropdownOpen] = useState(false);
   const [isThemeMenuOpen, setIsThemeMenuOpen] = useState(false);
   const [isProfileMenuOpen, setIsProfileMenuOpen] = useState(false);
   const [activeThemeId, setActiveThemeId] = useState("kinetic-obsidian");
+  const [isResubmitting, setIsResubmitting] = useState(false);
+  const [resubmitStatus, setResubmitStatus] = useState<string | null>(null);
 
   const isExplorerMode = !userGyms || userGyms.length === 0;
   const isPendingVerification = activeGym?.status === "pending_verification";
+  const isRejected = activeGym?.status === "rejected";
+  const isSuspended = activeGym?.status === "suspended";
   const isVerifiedActive = activeGym?.status === "active";
+
+  const handleResubmit = async () => {
+    if (!activeGym?.id || isResubmitting) return;
+    setIsResubmitting(true);
+    setResubmitStatus(null);
+    const res = await resubmitGym(activeGym.id);
+    setIsResubmitting(false);
+    if (res.success) {
+      setResubmitStatus("Gym resubmitted for verification review!");
+    } else {
+      setResubmitStatus(res.error || "Failed to resubmit gym.");
+    }
+  };
 
   const defaultBranches = [
     {
@@ -76,8 +93,10 @@ export function Header({ onSearchClick, onRegisterGymClick }: HeaderProps) {
         .toUpperCase()
     : "GP";
 
-  const userRole = isExplorerMode
+  const userRoleDisplay = isExplorerMode
     ? "Operator"
+    : userRole
+    ? userRole.charAt(0).toUpperCase() + userRole.slice(1)
     : activeGym?.yourRole
     ? activeGym.yourRole.charAt(0).toUpperCase() + activeGym.yourRole.slice(1)
     : "Administrator";
@@ -119,7 +138,46 @@ export function Header({ onSearchClick, onRegisterGymClick }: HeaderProps) {
               Verification In Review
             </span>
             <span className="truncate text-amber-200/90">
-              Your facility registration is under review. Live payouts and official VAT invoicing will unlock upon approval.
+              Your facility registration is under review. Live member intake, sales, and payments will unlock upon approval.
+            </span>
+          </div>
+        </div>
+      )}
+
+      {/* Verification Rejected Notice with Resubmit Action */}
+      {!isExplorerMode && isRejected && (
+        <div className="w-full bg-red-950/50 border-b border-red-500/40 px-4 py-2 flex items-center justify-between text-xs text-red-200 gap-4">
+          <div className="flex items-center gap-2 overflow-hidden">
+            <span className="px-2 py-0.5 rounded bg-red-500/20 text-red-400 border border-red-500/30 text-[10px] font-bold uppercase tracking-wider shrink-0 flex items-center gap-1">
+              <AlertTriangle className="w-3 h-3" />
+              Verification Rejected
+            </span>
+            <span className="truncate text-red-200/90">
+              {resubmitStatus || "Your facility verification was rejected. Please review your documents and resubmit."}
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={handleResubmit}
+            disabled={isResubmitting}
+            className="shrink-0 flex items-center gap-1 px-3 py-1 rounded-md bg-red-600 hover:bg-red-500 active:bg-red-700 text-white text-xs font-bold transition-all shadow-sm cursor-pointer disabled:opacity-50"
+          >
+            <span>{isResubmitting ? "Resubmitting..." : "Resubmit for Review"}</span>
+            <ArrowRight className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
+
+      {/* Verification Suspended Notice */}
+      {!isExplorerMode && isSuspended && (
+        <div className="w-full bg-amber-950/60 border-b border-amber-600/50 px-4 py-2 flex items-center justify-between text-xs text-amber-300 gap-4">
+          <div className="flex items-center gap-2 overflow-hidden">
+            <span className="px-2 py-0.5 rounded bg-amber-600/20 text-amber-400 border border-amber-600/40 text-[10px] font-bold uppercase tracking-wider shrink-0 flex items-center gap-1">
+              <AlertTriangle className="w-3 h-3" />
+              Facility Suspended
+            </span>
+            <span className="truncate text-amber-300/90">
+              This facility account has been suspended by platform administration. Contact support for assistance.
             </span>
           </div>
         </div>
@@ -358,7 +416,7 @@ export function Header({ onSearchClick, onRegisterGymClick }: HeaderProps) {
                   {user?.name || "Operator"}
                 </span>
                 <span className="text-[10px] text-slate-400 font-medium leading-tight">
-                  {userRole}
+                  {userRoleDisplay}
                 </span>
               </div>
 
@@ -376,7 +434,7 @@ export function Header({ onSearchClick, onRegisterGymClick }: HeaderProps) {
                     {user?.email || "user@gympulse.ae"}
                   </div>
                   <div className="mt-1 text-[10px] text-slate-400">
-                    Role: {userRole}
+                    Role: {userRoleDisplay}
                   </div>
                 </div>
 
