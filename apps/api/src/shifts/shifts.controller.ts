@@ -14,9 +14,11 @@ import { Roles } from '../common/decorators/roles.decorator';
 import { CurrentTenant, type TenantContext } from '../common/decorators/current-tenant.decorator';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { ShiftsService } from './shifts.service';
+import { AllowInactiveGym } from '../common/decorators/allow-inactive-gym.decorator';
+import { ActiveGymGuard } from '../common/guards/active-gym.guard';
 
 @Controller('shifts')
-@UseGuards(AuthGuard, TenantGuard, RolesGuard)
+@UseGuards(AuthGuard, TenantGuard, RolesGuard, ActiveGymGuard)
 export class ShiftsController {
   constructor(private readonly shiftsService: ShiftsService) {}
 
@@ -24,6 +26,7 @@ export class ShiftsController {
    * Open a cashier shift with opening cash float
    */
   @Post('open')
+  @AllowInactiveGym()
   @Roles('owner', 'manager', 'front_desk')
   async openShift(
     @CurrentTenant() tenant: TenantContext,
@@ -37,6 +40,7 @@ export class ShiftsController {
    * Get currently active open shift for staff member
    */
   @Get('current')
+  @AllowInactiveGym()
   @Roles('owner', 'manager', 'front_desk')
   async getCurrentShift(
     @CurrentTenant() tenant: TenantContext,
@@ -63,6 +67,7 @@ export class ShiftsController {
    * List shifts for gym with filters (Owner or Manager only)
    */
   @Get()
+  @AllowInactiveGym()
   @Roles('owner', 'manager')
   async listShifts(
     @CurrentTenant() tenant: TenantContext,
@@ -105,6 +110,7 @@ export class ShiftsController {
    * Get shift details and payments
    */
   @Get(':id')
+  @AllowInactiveGym()
   @Roles('owner', 'manager')
   async getShiftById(
     @CurrentTenant() tenant: TenantContext,

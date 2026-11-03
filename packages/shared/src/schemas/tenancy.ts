@@ -56,6 +56,7 @@ export const assignStaffSchema = z
   .object({
     userId: z.string().optional(),
     email: z.string().email().optional(),
+    fullName: z.string().min(2).max(255).optional(),
     role: z.enum(STAFF_ROLES),
     branchScope: z.enum([BRANCH_SCOPES.ALL, BRANCH_SCOPES.SELECTED]).default(BRANCH_SCOPES.ALL),
     branchIds: z.array(z.string().uuid()).default([]),

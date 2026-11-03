@@ -61,8 +61,8 @@ export class PlatformSubscriptionsController {
    */
   @Post('subscriptions/sweep')
   @PlatformRoles('superadmin')
-  async runSweep(@Body() body: { asOfDate?: string }) {
-    return this.subscriptionsService.runSubscriptionSweep(body?.asOfDate);
+  async runSweep() {
+    return this.subscriptionsService.runSubscriptionSweep();
   }
 
   /**

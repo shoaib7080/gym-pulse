@@ -7,13 +7,18 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { Reflector } from '@nestjs/core';
 import { eq } from 'drizzle-orm';
 import { DB, type Database } from '../../db/db.module';
 import { gyms } from '../../db/schema';
+import { ALLOW_INACTIVE_GYM_KEY } from '../decorators/allow-inactive-gym.decorator';
 
 @Injectable()
 export class ActiveGymGuard implements CanActivate {
-  constructor(@Inject(DB) private readonly db: Database) {}
+  constructor(
+    @Inject(DB) private readonly db: Database,
+    private readonly reflector: Reflector,
+  ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
     const req = context.switchToHttp().getRequest();
@@ -40,6 +45,17 @@ export class ActiveGymGuard implements CanActivate {
       });
     }
 
+    req.gym = gym;
+
+    const allowInactive = this.reflector.getAllAndOverride<boolean>(
+      ALLOW_INACTIVE_GYM_KEY,
+      [context.getHandler(), context.getClass()],
+    );
+
+    if (allowInactive) {
+      return true;
+    }
+
     if (gym.status !== 'active') {
       throw new ForbiddenException({
         code: 'GYM_NOT_ACTIVE',
@@ -47,7 +63,7 @@ export class ActiveGymGuard implements CanActivate {
       });
     }
 
-    req.gym = gym;
     return true;
   }
 }
+

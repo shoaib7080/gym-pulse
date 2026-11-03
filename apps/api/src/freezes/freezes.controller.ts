@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  ForbiddenException,
   Get,
   Param,
   Post,
@@ -13,25 +14,15 @@ import { RolesGuard } from '../common/guards/roles.guard';
 import { Roles } from '../common/decorators/roles.decorator';
 import { CurrentTenant, type TenantContext } from '../common/decorators/current-tenant.decorator';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
+import { LiftRateLimitGuard } from '../common/guards/lift-rate-limit.guard';
 import { FreezesService } from './freezes.service';
+import { ActiveGymGuard } from '../common/guards/active-gym.guard';
 import type { EarlyLiftFreezeInput } from '@gympulse/shared';
 
 @Controller('freezes')
-@UseGuards(AuthGuard, TenantGuard, RolesGuard)
+@UseGuards(AuthGuard, TenantGuard, RolesGuard, ActiveGymGuard)
 export class FreezesController {
   constructor(private readonly freezesService: FreezesService) {}
-
-  /**
-   * Run settlement of due freezes for the gym (Daily batch job or on-demand trigger)
-   */
-  @Post('settle-due')
-  @Roles('owner', 'manager')
-  async settleDueFreezes(
-    @CurrentTenant() tenant: TenantContext,
-    @Body() body?: { asOfDate?: string },
-  ) {
-    return this.freezesService.settleDueFreezesForGym(tenant.gymId, body?.asOfDate);
-  }
 
   /**
    * List freezes across the gym with optional status or membership filtering
@@ -115,6 +106,7 @@ export class FreezesController {
    */
   @Post(':id/lift')
   @Roles('owner', 'manager', 'front_desk')
+  @UseGuards(LiftRateLimitGuard)
   async liftFreezeEarly(
     @CurrentTenant() tenant: TenantContext,
     @CurrentUser() user: { id: string },
@@ -131,6 +123,23 @@ export class FreezesController {
   }
 
   /**
+   * Request upload target/presigned metadata for supporting proof document
+   */
+  @Post(':id/proof-target')
+  @Roles('owner', 'manager')
+  async createProofTarget(
+    @CurrentTenant() tenant: TenantContext,
+    @Param('id') freezeId: string,
+    @Body()
+    body: {
+      mimeType: 'application/pdf' | 'image/jpeg' | 'image/png';
+      sizeBytes: number;
+    },
+  ) {
+    return this.freezesService.createProofTarget(tenant.gymId, freezeId, body);
+  }
+
+  /**
    * Attach medical/supporting proof document (Restricted to Owner/Manager)
    */
   @Post(':id/proofs')
@@ -142,9 +151,9 @@ export class FreezesController {
     @Body()
     body: {
       storageKey: string;
-      mimeType?: 'application/pdf' | 'image/jpeg' | 'image/png';
-      sizeBytes?: number;
-      sha256?: string;
+      mimeType: 'application/pdf' | 'image/jpeg' | 'image/png';
+      sizeBytes: number;
+      sha256: string;
     },
   ) {
     return this.freezesService.attachProof(
@@ -156,11 +165,22 @@ export class FreezesController {
   }
 
   /**
-   * Run background purge of expired proof documents
+   * Get short-lived download URL for proof document (Restricted to Owner/Manager)
    */
-  @Post('purge-proofs')
+  @Get(':id/proofs/:proofId/download')
   @Roles('owner', 'manager')
-  async purgeExpiredProofs(@CurrentTenant() tenant: TenantContext) {
-    return this.freezesService.purgeExpiredProofs(tenant.gymId);
+  async getProofDownload(
+    @CurrentTenant() tenant: TenantContext,
+    @CurrentUser() user: { id: string },
+    @Param('id') freezeId: string,
+    @Param('proofId') proofId: string,
+  ) {
+    return this.freezesService.getProofDownload(
+      tenant.gymId,
+      freezeId,
+      proofId,
+      user?.id,
+      tenant.role,
+    );
   }
 }

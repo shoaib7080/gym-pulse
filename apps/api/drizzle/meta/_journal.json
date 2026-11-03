@@ -15,6 +15,27 @@
       "when": 1793247890895,
       "tag": "0001_freeze_exclusion_constraint",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1793447900000,
+      "tag": "0002_audit_trail_and_manager_pins",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1793447950000,
+      "tag": "0003_gym_daily_runs",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1793448000000,
+      "tag": "0004_payment_idempotency",
+      "breakpoints": true
     }
   ]
 }

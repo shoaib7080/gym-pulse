@@ -3,6 +3,7 @@ import {
   Controller,
   Get,
   NotFoundException,
+  Param,
   Patch,
   Post,
   Put,
@@ -13,6 +14,7 @@ import { AuthGuard } from '../common/guards/auth.guard';
 import { TenantGuard } from '../common/guards/tenant.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
 import { Roles } from '../common/decorators/roles.decorator';
+import { AllowInactiveGym } from '../common/decorators/allow-inactive-gym.decorator';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { CurrentTenant, type TenantContext } from '../common/decorators/current-tenant.decorator';
 import { TenancyService } from './tenancy.service';
@@ -35,6 +37,19 @@ export class TenancyController {
   }
 
   /**
+   * Route 1b: Resubmit gym for verification after rejection
+   * Owner only.
+   */
+  @Post(':id/resubmit')
+  @UseGuards(AuthGuard)
+  async resubmitGym(
+    @CurrentUser() user: { id: string },
+    @Param('id') gymId: string,
+  ) {
+    return this.tenancyService.resubmitGym(gymId, user.id);
+  }
+
+  /**
    * Route 2: List all gyms the current user belongs to (as owner, manager, or front_desk)
    * Useful in Postman or frontend to pick a gym and get its ID.
    */
@@ -50,6 +65,7 @@ export class TenancyController {
    */
   @Get('current')
   @UseGuards(AuthGuard, TenantGuard)
+  @AllowInactiveGym()
   async getCurrentGym(@CurrentTenant() tenant: TenantContext) {
     const gym = await this.tenancyService.getGymDetails(tenant.gymId);
     if (!gym) {
@@ -72,6 +88,7 @@ export class TenancyController {
   @Patch('profile')
   @UseGuards(AuthGuard, TenantGuard, RolesGuard)
   @Roles('owner', 'manager')
+  @AllowInactiveGym()
   async updateProfile(
     @CurrentUser() user: { id: string },
     @CurrentTenant() tenant: TenantContext,
@@ -87,6 +104,7 @@ export class TenancyController {
   @Post('documents')
   @UseGuards(AuthGuard, TenantGuard, RolesGuard)
   @Roles('owner', 'manager')
+  @AllowInactiveGym()
   async uploadDocument(
     @CurrentUser() user: { id: string },
     @CurrentTenant() tenant: TenantContext,
@@ -108,16 +126,18 @@ export class TenancyController {
   @Get('documents')
   @UseGuards(AuthGuard, TenantGuard, RolesGuard)
   @Roles('owner', 'manager')
+  @AllowInactiveGym()
   async getDocuments(@CurrentTenant() tenant: TenantContext) {
     return this.tenancyService.getGymDocuments(tenant.gymId);
   }
 
   /**
    * Route 4: List all staff for current gym
-   * Requires AuthGuard and TenantGuard
+   * Requires AuthGuard, TenantGuard, and RolesGuard (owner and manager only)
    */
   @Get('staff')
-  @UseGuards(AuthGuard, TenantGuard)
+  @UseGuards(AuthGuard, TenantGuard, RolesGuard)
+  @Roles('owner', 'manager')
   async getStaff(@CurrentTenant() tenant: TenantContext) {
     return this.tenancyService.getGymStaff(tenant.gymId);
   }
@@ -135,6 +155,35 @@ export class TenancyController {
     @Body() body: unknown,
   ) {
     return this.tenancyService.assignStaff(tenant.gymId, body, user.id);
+  }
+
+  /**
+   * Route 5b: Toggle staff active / disabled status (Owner only)
+   */
+  @Patch('staff/:id/status')
+  @UseGuards(AuthGuard, TenantGuard, RolesGuard)
+  @Roles('owner')
+  async updateStaffStatus(
+    @CurrentUser() user: { id: string },
+    @CurrentTenant() tenant: TenantContext,
+    @Param('id') id: string,
+    @Body() body: { isActive: boolean },
+  ) {
+    return this.tenancyService.updateStaffStatus(tenant.gymId, id, body.isActive, user.id);
+  }
+
+  /**
+   * Route 5c: Reset staff password via email (Owner only)
+   */
+  @Post('staff/:id/reset-password')
+  @UseGuards(AuthGuard, TenantGuard, RolesGuard)
+  @Roles('owner')
+  async resetStaffPassword(
+    @CurrentUser() user: { id: string },
+    @CurrentTenant() tenant: TenantContext,
+    @Param('id') id: string,
+  ) {
+    return this.tenancyService.resetStaffPassword(tenant.gymId, id, user.id);
   }
 
   /**
@@ -210,6 +259,21 @@ export class TenancyController {
   }
 
   /**
+   * Route: Set or update own manager PIN
+   * Owner and Manager only.
+   */
+  @Put('manager-pin')
+  @UseGuards(AuthGuard, TenantGuard, RolesGuard)
+  @Roles('owner', 'manager')
+  async setManagerPin(
+    @CurrentUser() user: { id: string },
+    @CurrentTenant() tenant: TenantContext,
+    @Body() body: unknown,
+  ) {
+    return this.tenancyService.setManagerPin(tenant.gymId, user.id, body);
+  }
+
+  /**
    * Route 8: View tenant-scoped tamper-evident audit logs
    * Owner and Manager only.
    */
@@ -221,13 +285,13 @@ export class TenancyController {
   }
 
   /**
-   * Route 9: Verify cryptographic SHA-256 hash chain integrity
+   * Route 9: Verify cryptographic SHA-256 hash chain integrity for this gym
    * Owner only.
    */
   @Post('audit-logs/verify')
   @UseGuards(AuthGuard, TenantGuard, RolesGuard)
   @Roles('owner')
-  async verifyAuditChain() {
-    return this.tenancyService.verifyAuditChain();
+  async verifyAuditChain(@CurrentTenant() tenant: TenantContext) {
+    return this.tenancyService.verifyAuditChain(tenant.gymId);
   }
 }

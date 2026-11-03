@@ -737,9 +737,16 @@ export class PlatformService {
   }
 
   /**
-   * Platform-wide audit history (all gyms + platform events)
+   * Platform-wide audit history (platform events)
    */
   async getPlatformAuditLogs(limit = 100) {
-    return await this.auditService.verifyChainIntegrity(limit);
+    return await this.auditService.getPlatformAuditLogs(limit);
+  }
+
+  /**
+   * Verify cryptographic SHA-256 chain integrity for the platform chain
+   */
+  async verifyPlatformAuditChain(limit = 100) {
+    return await this.auditService.verifyChainIntegrity('platform', limit);
   }
 }

@@ -7,6 +7,7 @@ import {
   char,
   jsonb,
   integer,
+  smallint,
   bigint,
   bigserial,
   date,
@@ -134,7 +135,7 @@ export const staffAssignments = pgTable(
       .references(() => users.id, { onDelete: 'restrict' }),
     role: text('role')
       .notNull()
-      .$type<'owner' | 'manager' | 'front_desk'>(),
+      .$type<'owner' | 'staff' | 'manager' | 'front_desk'>(),
     branchScope: text('branch_scope')
       .notNull()
       .default('all')
@@ -421,6 +422,27 @@ export const freezeProofs = pgTable('freeze_proofs', {
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
+export const gymDailyRuns = pgTable(
+  'gym_daily_runs',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    gymId: uuid('gym_id')
+      .notNull()
+      .references(() => gyms.id, { onDelete: 'cascade' }),
+    localDate: date('local_date').notNull(),
+    processedAt: timestamp('processed_at', { withTimezone: true }).notNull().defaultNow(),
+    freezesActivated: integer('freezes_activated').notNull().default(0),
+    freezesCompleted: integer('freezes_completed').notNull().default(0),
+    freezesExpired: integer('freezes_expired').notNull().default(0),
+    status: text('status').notNull().default('success').$type<'success' | 'failed'>(),
+    errorMessage: text('error_message'),
+  },
+  (table) => [
+    uniqueIndex('gym_daily_runs_gym_date_uq').on(table.gymId, table.localDate),
+    index('gym_daily_runs_gym_idx').on(table.gymId),
+  ],
+);
+
 export const gymDocuments = pgTable('gym_documents', {
   id: uuid('id').primaryKey().defaultRandom(),
   gymId: uuid('gym_id')
@@ -534,12 +556,17 @@ export const payments = pgTable(
     settledAt: timestamp('settled_at', { withTimezone: true }),
     recordedBy: uuid('recorded_by').references(() => users.id, { onDelete: 'set null' }),
     voidReason: text('void_reason'),
+    idempotencyKey: text('idempotency_key'),
+    requestHash: text('request_hash'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
     uniqueIndex('payments_provider_ref')
       .on(table.provider, table.providerReference)
       .where(sql`${table.provider} IS NOT NULL`),
+    uniqueIndex('payments_idempotency_uq')
+      .on(table.gymId, table.idempotencyKey)
+      .where(sql`${table.idempotencyKey} IS NOT NULL`),
   ],
 );
 
@@ -611,23 +638,54 @@ export const usedPassTokens = pgTable('used_pass_tokens', {
   expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
 });
 
-export const auditLogs = pgTable('audit_logs', {
-  id: bigserial('id', { mode: 'number' }).primaryKey(),
-  gymId: uuid('gym_id').references(() => gyms.id, { onDelete: 'restrict' }),
-  actorUserId: uuid('actor_user_id').references(() => users.id, { onDelete: 'set null' }),
-  actorRole: text('actor_role'),
-  adminActorId: uuid('admin_actor_id').references(() => platformAdmins.id, { onDelete: 'set null' }),
-  action: text('action').notNull(),
-  entityType: text('entity_type').notNull(),
-  entityId: text('entity_id'),
-  reasonCode: text('reason_code'),
-  payload: jsonb('payload').notNull().default({}),
-  ip: text('ip'),
-  device: text('device'),
-  prevHash: text('prev_hash'),
-  rowHash: text('row_hash').notNull(),
-  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-});
+export const auditLogs = pgTable(
+  'audit_logs',
+  {
+    id: bigserial('id', { mode: 'number' }).primaryKey(),
+    chainKey: text('chain_key').notNull(),
+    hashVersion: smallint('hash_version').notNull().default(2),
+    gymId: uuid('gym_id').references(() => gyms.id, { onDelete: 'restrict' }),
+    actorUserId: uuid('actor_user_id').references(() => users.id, { onDelete: 'set null' }),
+    actorRole: text('actor_role'),
+    adminActorId: uuid('admin_actor_id').references(() => platformAdmins.id, { onDelete: 'set null' }),
+    action: text('action').notNull(),
+    entityType: text('entity_type').notNull(),
+    entityId: text('entity_id'),
+    reasonCode: text('reason_code'),
+    payload: jsonb('payload').notNull().default({}),
+    ip: text('ip'),
+    device: text('device'),
+    prevHash: text('prev_hash'),
+    rowHash: text('row_hash').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index('audit_logs_chain_key_id_idx').on(table.chainKey, table.id),
+    index('audit_logs_gym_idx').on(table.gymId),
+  ],
+);
+
+export const managerPins = pgTable(
+  'manager_pins',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    gymId: uuid('gym_id')
+      .notNull()
+      .references(() => gyms.id, { onDelete: 'restrict' }),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'restrict' }),
+    pinHash: text('pin_hash').notNull(),
+    failedAttempts: integer('failed_attempts').notNull().default(0),
+    lockedUntil: timestamp('locked_until', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex('manager_pins_gym_user_uq').on(table.gymId, table.userId),
+    index('manager_pins_gym_idx').on(table.gymId),
+  ],
+);
 
 // ============================================================================
 // 7. Platform SaaS Subscriptions, Invoicing & Outbox (Spec Section 5.6 & 5.8)

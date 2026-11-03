@@ -18,7 +18,7 @@ import { PlansService } from './plans.service';
 import { ActiveGymGuard } from '../common/guards/active-gym.guard';
 
 @Controller('plans')
-@UseGuards(AuthGuard, TenantGuard, RolesGuard)
+@UseGuards(AuthGuard, TenantGuard, RolesGuard, ActiveGymGuard)
 export class PlansController {
   constructor(private readonly plansService: PlansService) {}
 
@@ -53,7 +53,6 @@ export class PlansController {
    * Create a new membership plan (Owner or Manager only, requires active verified gym)
    */
   @Post()
-  @UseGuards(ActiveGymGuard)
   @Roles('owner', 'manager')
   async createPlan(
     @CurrentTenant() tenant: TenantContext,

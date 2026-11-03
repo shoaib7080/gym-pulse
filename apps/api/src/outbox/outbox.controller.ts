@@ -20,26 +20,6 @@ export class OutboxController {
   constructor(private readonly outboxService: OutboxService) {}
 
   /**
-   * Enqueue a transactional notification for delivery (e.g. freeze confirmation, receipt)
-   * Accessible by: owner, manager
-   */
-  @Post('enqueue')
-  @Roles('owner', 'manager')
-  async enqueue(
-    @CurrentTenant() tenant: TenantContext,
-    @CurrentUser() user: { id: string },
-    @Body() body: Record<string, unknown>,
-  ) {
-    return this.outboxService.enqueue(
-      {
-        ...body,
-        gymId: tenant.gymId,
-      },
-      user?.id,
-    );
-  }
-
-  /**
    * List notifications in current gym's notification outbox
    * Accessible by: owner, manager
    */

@@ -36,7 +36,7 @@ export class PlansService {
         code: 'VALIDATION_FAILED',
         message: 'Invalid plan data',
         invalidParams: parseResult.error.issues.map(
-          (i: { path: (string | number)[]; message: string }) => ({
+          (i: { path: PropertyKey[]; message: string }) => ({
             name: i.path.join('.'),
             reason: i.message,
           }),
@@ -144,7 +144,7 @@ export class PlansService {
         code: 'VALIDATION_FAILED',
         message: 'Invalid plan update data',
         invalidParams: parseResult.error.issues.map(
-          (i: { path: (string | number)[]; message: string }) => ({
+          (i: { path: PropertyKey[]; message: string }) => ({
             name: i.path.join('.'),
             reason: i.message,
           }),
@@ -212,7 +212,7 @@ export class PlansService {
         code: 'VALIDATION_FAILED',
         message: 'Invalid freeze policy data',
         invalidParams: parseResult.error.issues.map(
-          (i: { path: (string | number)[]; message: string }) => ({
+          (i: { path: PropertyKey[]; message: string }) => ({
             name: i.path.join('.'),
             reason: i.message,
           }),

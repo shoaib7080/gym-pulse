@@ -17,6 +17,10 @@
 | **[CH-005](#ch-005-mobile-authentication--app-store-review-rejection-risks)** | Identity & Mobile | Regional Phone OTP vs. Social Logins vs. Apple Guideline 4.8 | First-Party Identity Core; No Social OAuth Without Apple | Eliminate App Store Rejections & Telecom Toll Fraud |
 | **[CH-006](#ch-006-anti-skimming-desk-cash-control-vs-staff-operational-friction)** | POS & Audit Trail | Trust-Based Cash Handling vs. Blind Shift Reconciliation | Blind Drawer Closeout + Immutable Adjustment Ledgers | Prevent Reception Cash Skimming & Unearned Free Days |
 | **[CH-007](#ch-007-multi-region-payment-strategy-gcc-vs-india-vs-international)** | Payments & Expansion | Monolithic Stripe vs. Multi-Gateway Regional Factory | `PaymentProviderFactory` (Tap for GCC, Razorpay for India) | mada/Jaywan/UPI Dominance & Stripe India Invite Limits |
+| **[CH-008](#ch-008-internal-job-scheduling--time-travel-vulnerabilities-in-freeze-settlement)** | Security & Automation | Public HTTP Triggers vs. Daemon Scheduler (`pg-boss` / Interval) | `FreezeSchedulerService` + Test-Only Date Overrides | Prevent Unauthorized Membership Extensions & Fraud |
+| **[CH-009](#ch-009-desk-staff-presence-verification-vs-remote-self-tap-fraud--denial-auditability)** | Access & Fraud Prevention | Unverified Remote Mobile Taps vs. Staff-Verified Desk Presence | Staff Verification (`desk_search`) + Denial Audit Persistence | Prevent Buddy Check-in Fraud & Audit Access Denials |
+| **[CH-010](#ch-010-public-self-serve-gym-owner-onboarding-vs-platform-admin-gating)** | Onboarding & Compliance | Instant Self-Serve Onboarding vs. Mandatory Platform Admin Review | Self-Serve Registration into Restricted `pending_verification` Sandbox | Balance PLG Conversion with UAE Regulatory Compliance |
+| **[CH-011](#ch-011-onboarding-progression--subscription-paywall-model)** | Monetization & Growth | Upfront Paywall vs. 4-Stage Progressive Onboarding Model | 4-Stage Model (Explorer -> Sandbox -> Free Starter -> Subscribed Tiers) | Maximize Conversion Without Giving Indefinite Free Usage |
 
 ---
 
@@ -173,6 +177,80 @@
     - **Secrets Separation & Vaulting**: The insecure `payment_provider_config` column was completely dropped from the database. Master API keys reside in environment secrets manager (`PlatformSecretsService`). Gyms store only their linked merchant account identifiers (`provider_account_id` in `gym_payment_accounts`). Any interim sensitive credentials are encrypted with AES-256-GCM envelope encryption at rest, accessible strictly by the gym owner, and never exposed via REST API responses.
 - **Future Revisit Trigger**:
   - Geographical expansion into Southeast Asia (Singapore, Malaysia, Indonesia) requiring native integration with PayNow, DuitNow, and GrabPay via regional aggregators like Xendit or HitPay.
+
+---
+
+### [CH-008] Internal Job Scheduling & Time-Travel Vulnerabilities in Freeze Settlement
+- **Context & Problem Statement**:
+  Automated domain maintenance in GymPulse requires executing two daily background workflows:
+  1. **Freeze Lifecycle Settlement**: Activating due scheduled freezes, completing ended active freezes, appending earned credit days to the member adjustments ledger, and restoring membership statuses to active.
+  2. **Medical Proof Purging**: Permanently deleting uploaded sensitive medical documents adhering to the statutory 30-day retention schedule (`delete_after = today + 30`).
+  In earlier iterations, these routines were exposed as tenant HTTP endpoints (`POST /v1/freezes/settle-due` and `POST /v1/freezes/purge-proofs`). Critically, `settle-due` accepted an arbitrary `asOfDate` in the JSON request body to facilitate date-advancement testing. Exposing this parameter over HTTP without environment gating created an existential financial vulnerability: any authenticated front-desk staff or rogue gym manager could pass an arbitrary future date (e.g. `{ asOfDate: '2027-01-01' }`), instantly triggering premature freeze completion and extending membership terms by months for free, bypassing desk renewal paywalls and defrauding gym owners. Furthermore, without an automated scheduler daemon, freezes would never activate or complete unless someone manually invoked the HTTP endpoint.
+- **Options Evaluated**:
+  - *Option A: Unrestricted Tenant HTTP Endpoints Triggered by External Cron (e.g., cron-job.org / Webhooks)*. Keep the endpoints as tenant-scoped HTTP APIs and rely on external web cron services or manual dashboard buttons to invoke them.
+  - *Option B: Distributed External Job Queue (pg-boss or BullMQ / Redis)*. Deploy a separate background queue worker process running `pg-boss` (PostgreSQL job queue) or Redis-backed BullMQ to coordinate cron schedules and multi-tenant task distribution.
+  - *Option C: Internal NestJS Daemon Scheduler (`FreezeSchedulerService`) with Test-Gated Time Travel*. Embed a dedicated background scheduler (`FreezeSchedulerService`) inside the API process running periodic/nightly sweeps using real gym local dates (`getGymLocalDate()`). Restrict the HTTP `asOfDate` override parameter strictly to automated test environments (`ALLOW_DESTRUCTIVE_TESTS === 'true'` or `NODE_ENV === 'test'`), returning HTTP 403 `DATE_OVERRIDE_FORBIDDEN` in production.
+- **Trade-Offs & Failure Modes**:
+  - *Option A Failure Mode*: Severe security and revenue leakage. Anyone with valid tenant credentials could forge "time-travel" HTTP payloads, prematurely completing freezes and granting unearned membership extensions. Additionally, if the external cron provider drops connections or fails to authenticate, background settlement silently stops, leaving gyms with frozen members unable to check in.
+  - *Option B Failure Mode*: Premature infrastructure complexity. Introducing an external Redis cluster or running complex schema migrations for `pg-boss` tables on a single-node API architecture adds deployment maintenance, connection pool bloat, and operational failure points without delivering measurable throughput benefits at current scale.
+- **Chosen Path & Resolution**:
+  - GymPulse implemented **Option C: Internal Daemon Scheduler with Test-Gated Time Travel** (ADR D-23):
+    - **Automated Daemon Scheduler (`FreezeSchedulerService`)**: Implemented as a singleton provider in `FreezesModule` implementing `OnModuleInit` and `OnModuleDestroy`. Runs scheduled sweeps across all active gyms using real local dates (`settleDueFreezesForAllGyms` and `purgeExpiredProofsForAllGyms`), eliminating reliance on external cron or manual triggers.
+    - **Strict Date Override Security Gate**: Updated `POST /v1/freezes/settle-due` in `FreezesController`. If a caller provides `asOfDate`, the controller asserts `process.env.NODE_ENV === 'test' || process.env.ALLOW_DESTRUCTIVE_TESTS === 'true'`. In all other environments, it immediately throws `ForbiddenException({ code: 'DATE_OVERRIDE_FORBIDDEN', message: 'The asOfDate override parameter is strictly restricted to automated test environments' })`.
+    - **Full Determinism in E2E Tests**: The automated test harness (`test-e2e-flow.cjs`) continues to run deterministic time-travel tests by passing `ALLOW_DESTRUCTIVE_TESTS=true`, while production deployments remain fully fortified against time-manipulation exploits.
+- **Future Revisit Trigger**:
+  - Transitioning to a horizontally autoscaled multi-instance deployment (Kubernetes HPA with >1 API pod replica), where a distributed queue with transactional advisory locking (such as `pg-boss` using PostgreSQL `FOR UPDATE SKIP LOCKED` or Redis BullMQ) is required to prevent multiple pods from executing overlapping settlement sweeps concurrently.
+
+---
+
+### [CH-009] Desk Staff Presence Verification vs. Remote Self-Tap Fraud & Denial Auditability
+- **Context & Problem Statement**:
+  Allowing members to mark attendance via a mobile "tap" endpoint (`POST /v1/attendance/tap` or `/v1/access/self-tap`) over arbitrary internet connections introduces an existential physical presence verification vulnerability: a member can mark attendance from home, work, or a coffee shop without stepping foot inside the gym. This falsifies gym attendance metrics, enables insurance rebate and employer wellness fraud, creates inaccurate capacity heatmaps, and exposes gyms to premises liability disputes (e.g. claims of injury occurring while the member was recorded as "present"). Furthermore, traditional access systems that merely reject unauthorized or expired check-ins with an ephemeral HTTP error without persisting the event in the database create a critical blind spot: front-desk reception and facility owners have zero visibility into denied entry attempts, recurring expired card swipes, or tailgating patterns.
+- **Options Evaluated**:
+  - *Option A: Trust-Based Member Self-Tap in Mobile App*. Provide members with a self-service "Tap to check in" button in their mobile app, trusting user honesty without hardware or staff presence validation.
+  - *Option B: Mobile Client Geofencing (GPS Coordinates)*. Force the mobile application to capture GPS coordinates at the time of tap and assert proximity to the gym's physical latitude/longitude before accepting attendance.
+  - *Option C: Staff-Verified Desk Presence (`desk_search`) with Comprehensive Denial Persistence and Duplicate-Tap Protection*. Restrict `POST /v1/attendance/tap` strictly to authorized on-duty desk staff (`owner`, `manager`, `front_desk`) with mandatory staff identity attribution (`verifiedBy`). Implement a rapid 120-second duplicate-tap guard (`DUPLICATE_TAP`). Crucially, persist all rejected check-in attempts (`result: 'denied'` + `denyReason`) into `check_ins` and emit SHA-256 audit logs before raising the HTTP 400 error. Defer unattended access to Phase 2 rotating cryptographic QR passes.
+- **Trade-Offs & Failure Modes**:
+  - *Option A Failure Mode*: Pervasive ghost attendance. Members check in remotely to maintain artificial workout streaks, gamify loyalty leaderboards, or defraud corporate health insurance subsidy programs.
+  - *Option B Failure Mode*: Fragile client-side enforcement. GPS location data is trivially spoofed via mock location tools on Android and jailbroken iOS devices. Furthermore, indoor gyms situated in multi-story shopping malls, commercial basements, or high-density concrete towers suffer from severe GPS signal attenuation, generating false rejections and high member frustration.
+- **Chosen Path & Resolution**:
+  - GymPulse implemented **Option C: Staff-Verified Desk Presence with Denial Persistence** (ADR D-20):
+    - **Staff Verification Required**: `POST /v1/attendance/tap` requires authenticated staff identity (`RolesGuard('owner', 'manager', 'front_desk')`) and asserts that `actorUserId` is present. Desk check-ins persist `method = 'desk_search'` with `verified_by = actorUserId`.
+    - **Rapid Duplicate-Tap Protection**: Desk check-ins enforce a 120-second duplicate-tap threshold (`DUPLICATE_TAP`), preventing accidental double-clicks or multiple barcode scanner trigger reads from inflating visit counts.
+    - **Immutable Denial Persistence**: Every denied check-in attempt—including frozen memberships (`MEMBERSHIP_FROZEN` / `FREEZE_ACTIVE`), inactive or expired subscriptions (`MEMBERSHIP_EXPIRED`), unstarted terms (`MEMBERSHIP_NOT_STARTED`), single-branch violations (`CROSS_BRANCH_ACCESS_DENIED`), and duplicate taps—is immediately inserted into `check_ins` with `result = 'denied'` and explicit `denyReason`, and logged to the SHA-256 tamper-evident `audit_logs` trail before returning the HTTP 400 response.
+    - **Operational Visibility**: The executive reports endpoint (`GET /v1/reports/checkins`) and history endpoint (`GET /v1/attendance/history`) now expose real-time denied attempt analytics, equipping gym managers to detect suspicious entry trends, expired card abuse, and front-desk anomalies.
+- **Future Revisit Trigger**:
+  - Phase 2 introduction of rotating, time-based dynamic QR passes (TOTP / Ed25519) displayed on member mobile screens and scanned by dedicated optical hardware or turnstile barcode readers.
+
+---
+
+### [CH-010] Public Self-Serve Gym Owner Onboarding vs. Platform Admin Gating
+- **Context & Problem Statement**: 
+  Balancing low-friction product-led growth (PLG) for gym owners with strict regulatory verification requirements (Trade License and UAE Tax Registration Number).
+- **Options Evaluated**:
+  - *Option A*: Manual platform admin review before any account creation.
+  - *Option B*: Instant self-serve registration into a restricted `pending_verification` sandbox.
+- **Trade-Offs & Failure Modes**: 
+  Forcing manual admin approval before login kills conversion. Allowing unverified accounts to perform live financial payouts or issue official tax invoices creates severe legal and regulatory liability.
+- **Chosen Path & Resolution**: 
+  Allow instant self-serve registration for Gym Owners (Name, Email, Password, Gym Name, Trade License) into a `pending_verification` sandbox. The gym can configure plans, add up to 2 branches (`BRANCH_LIMIT_UNVERIFIED`), and onboard up to 10 members (`MEMBER_LIMIT_UNSUBSCRIBED`), while high-risk actions (live payment payouts, official VAT invoices, outbound WhatsApp broadcasts) are blocked until a Platform Admin verifies their credentials.
+- **Future Revisit Trigger**: 
+  Implementation of automated OCR trade-license verification via third-party government APIs.
+
+---
+
+### [CH-011] Onboarding Progression & Subscription Paywall Model
+- **Context & Problem Statement**: 
+  Determining when and how to introduce GymPulse's SaaS subscription pricing to gym owners without creating friction during initial exploration.
+- **Options Evaluated**:
+  - *Option A*: Upfront paywall requiring credit card before dashboard access.
+  - *Option B*: 4-stage progressive onboarding (Explorer -> Sandbox -> Free Starter Tier -> Subscribed Tiers).
+- **Trade-Offs & Failure Modes**: 
+  Upfront paywalls destroy conversion rates. Providing indefinite free access prevents the platform from monetizing growing fitness centers.
+- **Chosen Path & Resolution**: 
+  4-stage onboarding model. Stage 1 gives read-only demo explorer access. Stage 2 provides a 10-member / 2-branch sandbox upon submitting registration details. Stage 3 unlocks the verified free starter state (10 members max). Stage 4 enforces a 3-tier subscription model (Tier 1: 100 members / 3 branches; Tier 2: 200 members / 5 branches; Tier 3: Custom enterprise limits managed via Platform Admin Console).
+- **Future Revisit Trigger**: 
+  Introduction of usage-based add-on billing (e.g., per-member overage fees).
 
 ---
 

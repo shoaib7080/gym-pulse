@@ -3,13 +3,15 @@ import { DbModule } from '../db/db.module';
 import { AuditModule } from '../common/audit/audit.module';
 import { FreezesService } from './freezes.service';
 import { FreezesController } from './freezes.controller';
-
+import { FreezeSchedulerService } from './freeze-scheduler.service';
 import { SubscriptionsModule } from '../subscriptions/subscriptions.module';
+
+import { ActiveGymGuard } from '../common/guards/active-gym.guard';
 
 @Module({
   imports: [DbModule, AuditModule, SubscriptionsModule],
   controllers: [FreezesController],
-  providers: [FreezesService],
-  exports: [FreezesService],
+  providers: [FreezesService, FreezeSchedulerService, ActiveGymGuard],
+  exports: [FreezesService, FreezeSchedulerService],
 })
 export class FreezesModule {}

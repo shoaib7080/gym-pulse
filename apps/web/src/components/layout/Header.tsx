@@ -1,30 +1,113 @@
-import { useState } from "react";
+import { useState, useEffect, useCallback } from "react";
 import {
   Building2,
   ChevronDown,
   Search,
   Bell,
   HelpCircle,
-  ShieldCheck,
   Palette,
+  LogOut,
+  CheckCircle2,
+  AlertTriangle,
+  ArrowRight,
+  ShieldCheck,
+  Clock,
 } from "../ui/icons";
 import {
   AVAILABLE_THEMES,
   applyThemeToDocument,
   type ThemeConfig,
 } from "../../theme";
+import { useAuth } from "../../context/AuthContext";
 
 interface HeaderProps {
   onSearchClick?: () => void;
+  onRegisterGymClick?: () => void;
+  onNavSelect?: (nav: string) => void;
 }
 
-export function Header({ onSearchClick }: HeaderProps) {
-  const [selectedBranch, setSelectedBranch] = useState("Downtown Flagship");
+interface RealBranch {
+  id: string;
+  name: string;
+  isActive?: boolean;
+  isMain?: boolean;
+  address?: {
+    street?: string;
+    city?: string;
+    emirate?: string;
+    country?: string;
+    postalCode?: string;
+  };
+}
+
+export function Header({ onSearchClick, onRegisterGymClick, onNavSelect }: HeaderProps) {
+  const { user, userGyms, activeGym, activeGymId, userRole, branchScope, setActiveGymId, resubmitGym, signOut, apiFetch } = useAuth();
+
+  const [realBranches, setRealBranches] = useState<RealBranch[]>([]);
+  const [selectedBranchId, setSelectedBranchId] = useState<string | null>(null);
+  const [selectedBranchName, setSelectedBranchName] = useState<string>("");
   const [isBranchDropdownOpen, setIsBranchDropdownOpen] = useState(false);
   const [isThemeMenuOpen, setIsThemeMenuOpen] = useState(false);
+  const [isProfileMenuOpen, setIsProfileMenuOpen] = useState(false);
   const [activeThemeId, setActiveThemeId] = useState("kinetic-obsidian");
+  const [isResubmitting, setIsResubmitting] = useState(false);
+  const [resubmitStatus, setResubmitStatus] = useState<string | null>(null);
 
-  const branches = [
+  // Fetch real branches from DB whenever activeGymId changes
+  const loadHeaderBranches = useCallback(async () => {
+    if (!activeGymId) {
+      setRealBranches([]);
+      return;
+    }
+
+    try {
+      const res = await apiFetch('/v1/branches');
+      if (res.ok) {
+        const data = await res.json();
+        const branchList: RealBranch[] = Array.isArray(data) ? data : [];
+        setRealBranches(branchList);
+
+        if (branchList.length > 0) {
+          // If no branch currently selected or selected branch not in list, pick the main or first branch
+          const match = branchList.find((b) => b.id === selectedBranchId);
+          if (!match) {
+            const defaultBranch = branchList.find((b) => b.isMain) || branchList[0];
+            setSelectedBranchId(defaultBranch.id);
+            setSelectedBranchName(defaultBranch.name);
+          } else {
+            setSelectedBranchName(match.name);
+          }
+        }
+      }
+    } catch (err) {
+      console.warn("Failed to fetch branches in Header:", err);
+    }
+  }, [apiFetch, activeGymId, selectedBranchId]);
+
+  useEffect(() => {
+    loadHeaderBranches();
+  }, [loadHeaderBranches]);
+
+  const isExplorerMode = !userGyms || userGyms.length === 0;
+  const isPendingVerification = activeGym?.status === "pending_verification";
+  const isRejected = activeGym?.status === "rejected";
+  const isSuspended = activeGym?.status === "suspended";
+  const isVerifiedActive = activeGym?.status === "active";
+
+  const handleResubmit = async () => {
+    if (!activeGym?.id || isResubmitting) return;
+    setIsResubmitting(true);
+    setResubmitStatus(null);
+    const res = await resubmitGym(activeGym.id);
+    setIsResubmitting(false);
+    if (res.success) {
+      setResubmitStatus("Gym resubmitted for verification review!");
+    } else {
+      setResubmitStatus(res.error || "Failed to resubmit gym.");
+    }
+  };
+
+  const defaultBranches = [
     {
       name: "Downtown Flagship",
       code: "Branch #01",
@@ -51,198 +134,400 @@ export function Header({ onSearchClick }: HeaderProps) {
     setIsThemeMenuOpen(false);
   };
 
+  // Compute user initials
+  const userInitials = user?.name
+    ? user.name
+        .split(" ")
+        .map((p) => p[0])
+        .filter(Boolean)
+        .slice(0, 2)
+        .join("")
+        .toUpperCase()
+    : "GP";
+
+  const userRoleDisplay = isExplorerMode
+    ? "Operator"
+    : userRole
+    ? userRole.charAt(0).toUpperCase() + userRole.slice(1)
+    : activeGym?.yourRole
+    ? activeGym.yourRole.charAt(0).toUpperCase() + activeGym.yourRole.slice(1)
+    : "Administrator";
+
+  const firstRegisteredGymName = userGyms && userGyms.length > 0 ? (userGyms[0].gym?.tradeName || userGyms[0].gym?.legalName) : null;
+
+  const facilityName = isExplorerMode
+    ? "Demo Facility"
+    : activeGym?.tradeName || firstRegisteredGymName || "Fitness Facility";
+
   return (
-    <header className="sticky top-0 z-30 h-16 w-full px-6 bg-surface-container-lowest/85 backdrop-blur-xl border-b border-outline-variant/30 flex items-center justify-between gap-4 shrink-0 shadow-sm">
-      {/* Left: Branch Selector Dropdown & Live Status Indicators */}
-      <div className="flex items-center gap-3">
-        {/* Interactive Branch Selector */}
-        <div className="relative">
+    <div className="flex flex-col shrink-0 z-30 font-sans">
+
+      {/* Verification In Review Notice */}
+      {!isExplorerMode && isPendingVerification && (
+        <div className="w-full bg-amber-950/40 border-b border-amber-500/30 px-4 py-2 flex items-center justify-between text-xs text-amber-200 gap-4">
+          <div className="flex items-center gap-2 overflow-hidden">
+            <span className="px-2 py-0.5 rounded bg-amber-500/20 text-amber-400 border border-amber-500/30 text-[10px] font-bold uppercase tracking-wider shrink-0 flex items-center gap-1">
+              <Clock className="w-3 h-3" />
+              Verification In Review
+            </span>
+            <span className="truncate text-amber-200/90">
+              Your facility registration is under review. Live member intake, sales, and payments will unlock upon approval.
+            </span>
+          </div>
+        </div>
+      )}
+
+      {/* Verification Rejected Notice with Resubmit Action */}
+      {!isExplorerMode && isRejected && (
+        <div className="w-full bg-red-950/50 border-b border-red-500/40 px-4 py-2 flex items-center justify-between text-xs text-red-200 gap-4">
+          <div className="flex items-center gap-2 overflow-hidden">
+            <span className="px-2 py-0.5 rounded bg-red-500/20 text-red-400 border border-red-500/30 text-[10px] font-bold uppercase tracking-wider shrink-0 flex items-center gap-1">
+              <AlertTriangle className="w-3 h-3" />
+              Verification Rejected
+            </span>
+            <span className="truncate text-red-200/90">
+              {resubmitStatus || "Your facility verification was rejected. Please review your documents and resubmit."}
+            </span>
+          </div>
           <button
             type="button"
-            onClick={() => setIsBranchDropdownOpen(!isBranchDropdownOpen)}
-            className="flex items-center gap-2.5 px-3 py-1.5 rounded-lg bg-surface-container hover:bg-surface-container-high border border-outline-variant/40 hover:border-primary/50 transition-all cursor-pointer shadow-xs group"
+            onClick={handleResubmit}
+            disabled={isResubmitting}
+            className="shrink-0 flex items-center gap-1 px-3 py-1 rounded-md bg-red-600 hover:bg-red-500 active:bg-red-700 text-white text-xs font-bold transition-all shadow-sm cursor-pointer disabled:opacity-50"
           >
-            <Building2 className="w-4 h-4 text-primary shrink-0" />
-            <div className="flex flex-col text-left">
-              <span className="text-xs font-bold text-on-surface leading-tight">
-                {selectedBranch}
-              </span>
-              <span className="text-[10px] text-on-surface-variant font-medium leading-tight">
-                Branch #01 • 84% Capacity
-              </span>
-            </div>
-            <ChevronDown
-              className={`w-3.5 h-3.5 text-on-surface-variant ml-1 transition-transform duration-200 ${
-                isBranchDropdownOpen ? "rotate-180" : ""
-              }`}
-            />
+            <span>{isResubmitting ? "Resubmitting..." : "Resubmit for Review"}</span>
+            <ArrowRight className="w-3.5 h-3.5" />
           </button>
+        </div>
+      )}
 
-          {/* Branch Dropdown Menu */}
-          {isBranchDropdownOpen && (
-            <div className="absolute top-full left-0 mt-2 w-64 rounded-xl bg-surface-container-high border border-outline-variant/50 p-2 shadow-xl z-50 animate-in fade-in zoom-in-95 duration-150">
-              <div className="px-2 py-1.5 text-[10px] font-bold text-outline uppercase tracking-wider">
-                Select Facility Branch
+      {/* Verification Suspended Notice */}
+      {!isExplorerMode && isSuspended && (
+        <div className="w-full bg-amber-950/60 border-b border-amber-600/50 px-4 py-2 flex items-center justify-between text-xs text-amber-300 gap-4">
+          <div className="flex items-center gap-2 overflow-hidden">
+            <span className="px-2 py-0.5 rounded bg-amber-600/20 text-amber-400 border border-amber-600/40 text-[10px] font-bold uppercase tracking-wider shrink-0 flex items-center gap-1">
+              <AlertTriangle className="w-3 h-3" />
+              Facility Suspended
+            </span>
+            <span className="truncate text-amber-300/90">
+              This facility account has been suspended by platform administration. Contact support for assistance.
+            </span>
+          </div>
+        </div>
+      )}
+
+      {/* Main Top Header Bar */}
+      <header className="h-16 w-full px-6 bg-surface-container-lowest/85 backdrop-blur-xl border-b border-outline-variant/30 flex items-center justify-between gap-4 shrink-0 shadow-sm font-sans">
+        {/* Left: Branch / Gym Selector Dropdown */}
+        <div className="flex items-center gap-3 shrink-0">
+          <div className="relative">
+            <button
+              type="button"
+              onClick={() => setIsBranchDropdownOpen(!isBranchDropdownOpen)}
+              className="flex items-center gap-2.5 px-3 py-1.5 rounded-lg bg-surface-container hover:bg-surface-container-high border border-outline-variant/40 hover:border-slate-500 transition-all cursor-pointer shadow-xs group"
+            >
+              <Building2 className="w-4 h-4 text-slate-300 shrink-0" />
+              <div className="flex flex-col text-left max-w-[160px] sm:max-w-[200px] truncate">
+                <span className="text-xs font-bold text-on-surface leading-tight truncate">
+                  {facilityName}
+                </span>
+                <span className="text-[10px] text-slate-400 font-medium leading-tight truncate">
+                  {isExplorerMode
+                    ? "Sample Data"
+                    : selectedBranchName
+                    ? `${selectedBranchName}${realBranches.length > 1 ? ` • ${realBranches.length} Branches` : ''}`
+                    : realBranches.length > 0
+                    ? `${realBranches.length} Branches • Active`
+                    : "Primary Hub"}
+                </span>
               </div>
-              <div className="flex flex-col gap-1">
-                {branches.map((b) => (
+              <ChevronDown
+                className={`w-3.5 h-3.5 text-slate-400 ml-1 transition-transform duration-200 ${
+                  isBranchDropdownOpen ? "rotate-180" : ""
+                }`}
+              />
+            </button>
+
+            {/* Facility / Branch Dropdown Menu */}
+            {isBranchDropdownOpen && (
+              <div className="absolute top-full left-0 mt-2 w-72 rounded-xl bg-surface-container-high border border-outline-variant/50 p-2 shadow-xl z-50 animate-in fade-in zoom-in-95 duration-150">
+                {/* If user has multiple assigned gyms */}
+                {userGyms && userGyms.length > 1 && (
+                  <div className="mb-2 pb-2 border-b border-outline-variant/30">
+                    <div className="px-2 py-1 text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+                      Switch Fitness Facility
+                    </div>
+                    <div className="flex flex-col gap-1">
+                      {userGyms.map((g) => (
+                        <button
+                          key={g.gymId}
+                          type="button"
+                          onClick={() => {
+                            setActiveGymId(g.gymId);
+                            setIsBranchDropdownOpen(false);
+                          }}
+                          className={`w-full flex items-center justify-between p-2 rounded-lg text-left text-xs transition-colors ${
+                            activeGymId === g.gymId
+                              ? "bg-slate-800 text-white font-semibold"
+                              : "hover:bg-surface-bright text-on-surface"
+                          }`}
+                        >
+                          <div className="truncate pr-2">
+                            <div className="font-semibold truncate">{g.gym.tradeName}</div>
+                            <div className="text-[10px] text-slate-400">{g.role} • {g.gym.currency}</div>
+                          </div>
+                          {activeGymId === g.gymId && (
+                            <CheckCircle2 className="w-3.5 h-3.5 text-primary shrink-0" />
+                          )}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Branch Selection */}
+                <div className="px-2 py-1 text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+                  Select Facility Branch
+                </div>
+                <div className="flex flex-col gap-1 max-h-56 overflow-y-auto">
+                  {realBranches.length > 0 ? (
+                    realBranches.map((b) => (
+                      <button
+                        key={b.id}
+                        type="button"
+                        onClick={() => {
+                          setSelectedBranchId(b.id);
+                          setSelectedBranchName(b.name);
+                          setIsBranchDropdownOpen(false);
+                        }}
+                        className={`w-full flex items-center justify-between p-2 rounded-lg text-left text-xs transition-colors ${
+                          selectedBranchId === b.id || selectedBranchName === b.name
+                            ? "bg-slate-800 text-white font-semibold"
+                            : "hover:bg-surface-bright text-on-surface"
+                        }`}
+                      >
+                        <div>
+                          <div className="font-semibold">{b.name}</div>
+                          <div className="text-[10px] text-slate-400">
+                            {b.address?.city || b.address?.emirate || "Dubai"}
+                          </div>
+                        </div>
+                        {b.isMain ? (
+                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-primary/20 text-primary font-bold">
+                            Main
+                          </span>
+                        ) : b.isActive === false ? (
+                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 font-medium">
+                            Inactive
+                          </span>
+                        ) : null}
+                      </button>
+                    ))
+                  ) : !isExplorerMode ? (
+                    <div className="p-3 text-center text-xs text-slate-400">
+                      No branches found for this gym.
+                    </div>
+                  ) : (
+                    defaultBranches.map((b) => (
+                      <button
+                        key={b.name}
+                        type="button"
+                        onClick={() => {
+                          setSelectedBranchName(b.name);
+                          setIsBranchDropdownOpen(false);
+                        }}
+                        className={`w-full flex items-center justify-between p-2 rounded-lg text-left text-xs transition-colors ${
+                          selectedBranchName === b.name
+                            ? "bg-slate-800 text-white font-semibold"
+                            : "hover:bg-surface-bright text-on-surface"
+                        }`}
+                      >
+                        <div>
+                          <div className="font-semibold">{b.name}</div>
+                          <div className="text-[10px] text-slate-400">{b.code}</div>
+                        </div>
+                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-surface-container font-mono">
+                          {b.capacity}
+                        </span>
+                      </button>
+                    ))
+                  )}
+                </div>
+
+                {/* Manage Branches quick link */}
+                {onNavSelect && (
+                  <div className="mt-2 pt-2 border-t border-outline-variant/30">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsBranchDropdownOpen(false);
+                        onNavSelect("branches");
+                      }}
+                      className="w-full flex items-center justify-between p-1.5 rounded-lg text-xs font-semibold text-slate-300 hover:text-white hover:bg-surface-container transition-colors cursor-pointer"
+                    >
+                      <span>Manage All Branches</span>
+                      <span className="text-primary font-bold">→</span>
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* Active Shift Status */}
+          <div className="hidden lg:flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-surface-container border border-outline-variant/30 text-[11px] text-slate-300">
+            <span className="w-2 h-2 rounded-full bg-emerald-400" />
+            <span className="font-medium">Shift: Front Desk Active</span>
+          </div>
+        </div>
+
+        {/* Middle: Ctrl+K / Command Search Bar (Widened & uncluttered) */}
+        <div className="flex-1 max-w-xl mx-4 hidden md:block">
+          <div
+            role="search"
+            onClick={onSearchClick}
+            className="relative flex items-center w-full cursor-pointer group"
+          >
+            <Search className="w-4 h-4 absolute left-3.5 text-slate-400 group-hover:text-primary transition-colors pointer-events-none" />
+            <input
+              type="text"
+              readOnly
+              placeholder="Search members, check-ins, invoices..."
+              className="w-full bg-surface-container-low text-on-surface placeholder:text-slate-400 text-xs pl-10 pr-16 py-2 rounded-lg border border-outline-variant/40 group-hover:border-slate-500 focus:outline-none transition-colors cursor-pointer"
+            />
+            <div className="absolute right-2.5 flex items-center gap-1 pointer-events-none">
+              <kbd className="px-1.5 py-0.5 text-[10px] font-semibold text-slate-400 bg-surface-container border border-outline-variant/50 rounded font-sans shadow-2xs">
+                Ctrl+K
+              </kbd>
+            </div>
+          </div>
+        </div>
+
+        {/* Right: Actions, Theme Switcher, Notifications, User Profile */}
+        <div className="flex items-center gap-3 shrink-0">
+          {/* Theme Picker Dropdown */}
+          <div className="relative">
+            <button
+              type="button"
+              title="Switch Dashboard Theme"
+              onClick={() => setIsThemeMenuOpen(!isThemeMenuOpen)}
+              className="flex items-center gap-1.5 p-2 rounded-lg text-slate-400 hover:text-on-surface hover:bg-surface-container transition-colors cursor-pointer"
+            >
+              <Palette className="w-4 h-4 text-slate-300" />
+              <span className="text-xs font-semibold hidden sm:inline">Theme</span>
+            </button>
+
+            {isThemeMenuOpen && (
+              <div className="absolute right-0 top-full mt-2 w-56 rounded-xl bg-surface-container-high border border-outline-variant/50 p-2 shadow-xl z-50 animate-in fade-in zoom-in-95 duration-150">
+                <div className="px-2 py-1 text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+                  Color Systems
+                </div>
+                <div className="flex flex-col gap-1">
+                  {Object.values(AVAILABLE_THEMES).map((th) => (
+                    <button
+                      key={th.id}
+                      type="button"
+                      onClick={() => handleSelectTheme(th)}
+                      className={`w-full flex items-center justify-between p-2 rounded-lg text-left text-xs transition-colors ${
+                        activeThemeId === th.id
+                          ? "bg-slate-800 text-white font-semibold"
+                          : "hover:bg-surface-bright text-on-surface"
+                      }`}
+                    >
+                      <span>{th.name}</span>
+                      <span
+                        className="w-3 h-3 rounded-full border border-surface shadow-xs"
+                        style={{ backgroundColor: th.colors.primary }}
+                      />
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Notifications & Help Center */}
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              title="Help & Knowledge Base"
+              className="p-2 rounded-lg text-slate-400 hover:text-on-surface hover:bg-surface-container transition-colors"
+            >
+              <HelpCircle className="w-4 h-4" />
+            </button>
+
+            <button
+              type="button"
+              title="Notifications"
+              className="relative p-2 rounded-lg text-slate-400 hover:text-on-surface hover:bg-surface-container transition-colors"
+            >
+              <Bell className="w-4 h-4" />
+            </button>
+          </div>
+
+          <div className="h-5 w-px bg-outline-variant/30 hidden sm:block" />
+
+          {/* User Profile */}
+          <div className="relative">
+            <button
+              type="button"
+              onClick={() => setIsProfileMenuOpen(!isProfileMenuOpen)}
+              className="flex items-center gap-2.5 pl-1 p-1 rounded-lg hover:bg-surface-container transition-colors cursor-pointer text-left"
+            >
+              <div className="hidden lg:flex flex-col text-right">
+                <span className="text-xs font-bold text-on-surface leading-tight">
+                  {user?.name || "Operator"}
+                </span>
+                <span className="text-[10px] text-slate-400 font-medium leading-tight">
+                  {userRoleDisplay}
+                </span>
+              </div>
+
+              <div className="w-8 h-8 rounded-lg bg-surface-container-high border border-outline-variant/60 flex items-center justify-center text-xs font-bold text-slate-200">
+                {userInitials}
+              </div>
+            </button>
+
+            {/* Profile & Session Dropdown */}
+            {isProfileMenuOpen && (
+              <div className="absolute right-0 top-full mt-2 w-64 rounded-xl bg-surface-container-high border border-outline-variant/50 p-3 shadow-xl z-50 animate-in fade-in zoom-in-95 duration-150">
+                <div className="pb-3 border-b border-outline-variant/30">
+                  <div className="text-xs font-bold text-on-surface">{user?.name || "Operator"}</div>
+                  <div className="text-[11px] text-slate-400 truncate">
+                    {user?.email || "user@gympulse.ae"}
+                  </div>
+                  <div className="mt-1 text-[10px] text-slate-400">
+                    Role: {userRoleDisplay}
+                  </div>
+                </div>
+
+                <div className="py-2">
+                  <div className="text-[10px] text-slate-400 font-bold uppercase tracking-wider mb-0.5">
+                    Active Facility
+                  </div>
+                  <div className="text-xs font-medium text-on-surface">
+                    {facilityName}
+                  </div>
+                </div>
+
+                <div className="pt-2 border-t border-outline-variant/30">
                   <button
-                    key={b.name}
                     type="button"
                     onClick={() => {
-                      setSelectedBranch(b.name);
-                      setIsBranchDropdownOpen(false);
+                      setIsProfileMenuOpen(false);
+                      signOut();
                     }}
-                    className={`w-full flex items-center justify-between p-2 rounded-lg text-left text-xs transition-colors ${
-                      selectedBranch === b.name
-                        ? "bg-primary-container text-on-primary-container font-semibold"
-                        : "hover:bg-surface-bright text-on-surface"
-                    }`}
+                    className="w-full flex items-center gap-2 p-2 rounded-lg text-xs font-semibold text-error hover:bg-error-container/20 transition-colors cursor-pointer"
                   >
-                    <div>
-                      <div className="font-semibold">{b.name}</div>
-                      <div className="text-[10px] opacity-75">{b.code}</div>
-                    </div>
-                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-surface-container font-mono">
-                      {b.capacity}
-                    </span>
+                    <LogOut className="w-4 h-4" />
+                    <span>Sign Out</span>
                   </button>
-                ))}
+                </div>
               </div>
-            </div>
-          )}
-        </div>
-
-        {/* Quick Status Indicators */}
-        <div className="hidden xl:flex items-center gap-2">
-          <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-surface-container border border-outline-variant/40">
-            <span className="h-1.5 w-1.5 rounded-full bg-primary animate-pulse" />
-            <span className="text-[11px] font-semibold text-primary uppercase tracking-wide">
-              Operating: Normal
-            </span>
-          </div>
-          <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-surface-container border border-outline-variant/40">
-            <ShieldCheck className="w-3.5 h-3.5 text-secondary" />
-            <span className="text-[11px] font-semibold text-secondary uppercase tracking-wide">
-              Compliance: Verified
-            </span>
+            )}
           </div>
         </div>
-      </div>
-
-      {/* Middle: Ctrl+K / Command Search Bar */}
-      <div className="flex-1 max-w-md mx-4 hidden md:block">
-        <div
-          role="search"
-          onClick={onSearchClick}
-          className="relative flex items-center w-full cursor-pointer group"
-        >
-          <Search className="w-4 h-4 absolute left-3 text-on-surface-variant group-hover:text-primary transition-colors pointer-events-none" />
-          <input
-            type="text"
-            readOnly
-            placeholder="Search members, trainers, receipts..."
-            className="w-full bg-surface-container-low text-on-surface placeholder:text-outline text-xs pl-9 pr-14 py-2 rounded-lg border border-outline-variant/40 group-hover:border-primary/50 focus:outline-none transition-colors cursor-pointer"
-          />
-          <div className="absolute right-2.5 flex items-center gap-1">
-            <kbd className="px-1.5 py-0.5 text-[10px] font-semibold text-outline bg-surface-container border border-outline-variant/50 rounded font-mono shadow-2xs">
-              Ctrl+K
-            </kbd>
-          </div>
-        </div>
-      </div>
-
-      {/* Right: Actions, Theme Switcher, Notifications, User Profile */}
-      <div className="flex items-center gap-3">
-        {/* Theme Picker Dropdown */}
-        <div className="relative">
-          <button
-            type="button"
-            title="Switch Dashboard Theme"
-            onClick={() => setIsThemeMenuOpen(!isThemeMenuOpen)}
-            className="flex items-center gap-1.5 p-2 rounded-lg text-on-surface-variant hover:text-on-surface hover:bg-surface-container transition-colors"
-          >
-            <Palette className="w-4 h-4 text-primary" />
-            <span className="text-xs font-semibold hidden sm:inline">
-              Theme
-            </span>
-          </button>
-
-          {isThemeMenuOpen && (
-            <div className="absolute right-0 top-full mt-2 w-56 rounded-xl bg-surface-container-high border border-outline-variant/50 p-2 shadow-xl z-50 animate-in fade-in zoom-in-95 duration-150">
-              <div className="px-2 py-1 text-[10px] font-bold text-outline uppercase tracking-wider">
-                Color Systems
-              </div>
-              <div className="flex flex-col gap-1">
-                {Object.values(AVAILABLE_THEMES).map((th) => (
-                  <button
-                    key={th.id}
-                    type="button"
-                    onClick={() => handleSelectTheme(th)}
-                    className={`w-full flex items-center justify-between p-2 rounded-lg text-left text-xs transition-colors ${
-                      activeThemeId === th.id
-                        ? "bg-primary-container text-on-primary-container font-semibold"
-                        : "hover:bg-surface-bright text-on-surface"
-                    }`}
-                  >
-                    <span>{th.name}</span>
-                    <span
-                      className="w-3 h-3 rounded-full border border-surface shadow-xs"
-                      style={{ backgroundColor: th.colors.primary }}
-                    />
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
-        </div>
-
-        {/* Notifications & Help Center */}
-        <div className="flex items-center gap-1">
-          <button
-            type="button"
-            title="Help & Knowledge Base"
-            className="p-2 rounded-lg text-on-surface-variant hover:text-on-surface hover:bg-surface-container transition-colors"
-          >
-            <HelpCircle className="w-5 h-5" />
-          </button>
-
-          <button
-            type="button"
-            title="Notifications (3 unread)"
-            className="relative p-2 rounded-lg text-on-surface-variant hover:text-on-surface hover:bg-surface-container transition-colors"
-          >
-            <Bell className="w-5 h-5" />
-            <span className="absolute top-1.5 right-1.5 flex h-4 w-4 items-center justify-center rounded-full bg-primary text-[10px] font-bold text-on-primary-container">
-              3
-            </span>
-          </button>
-        </div>
-
-        <div className="h-6 w-px bg-outline-variant/30 hidden sm:block" />
-
-        {/* User Profile */}
-        <div className="flex items-center gap-2.5 pl-1">
-          <div className="hidden lg:flex flex-col text-right">
-            <span className="text-xs font-bold text-on-surface leading-tight">
-              Sarah Jenkins
-            </span>
-            <div className="flex items-center justify-end gap-1">
-              <span className="h-1.5 w-1.5 rounded-full bg-primary" />
-              <span className="text-[10px] text-on-surface-variant font-medium leading-tight">
-                General Manager
-              </span>
-            </div>
-          </div>
-
-          <div className="relative">
-            <div className="w-8 h-8 rounded-full bg-surface-container-high border border-outline-variant/60 flex items-center justify-center text-xs font-bold text-primary ring-1 ring-primary/20">
-              SJ
-            </div>
-            <span className="absolute bottom-0 right-0 h-2 w-2 rounded-full bg-primary ring-2 ring-surface" />
-          </div>
-        </div>
-      </div>
-    </header>
+      </header>
+    </div>
   );
 }

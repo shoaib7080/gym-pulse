@@ -12,7 +12,7 @@ export class AttendanceService {
   constructor(private readonly checkInService: CheckInService) {}
 
   /**
-   * Tap to mark attendance (Check-in from member app or desk)
+   * Tap to mark attendance at the front desk (Authorized staff scan/search)
    * Delegates to decoupled CheckInService domain processor
    */
   async tapAttendance(
@@ -26,7 +26,7 @@ export class AttendanceService {
       membershipId: input.membershipId,
       branchId: input.branchId,
       actorUserId,
-      method: 'manual',
+      method: 'desk_search',
       timestamp: new Date(),
     });
   }

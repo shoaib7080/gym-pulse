@@ -13,14 +13,15 @@ import { Roles } from '../common/decorators/roles.decorator';
 import { CurrentTenant, type TenantContext } from '../common/decorators/current-tenant.decorator';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { AttendanceService, type MarkAttendanceDto } from './attendance.service';
+import { ActiveGymGuard } from '../common/guards/active-gym.guard';
 
 @Controller('attendance')
-@UseGuards(AuthGuard, TenantGuard, RolesGuard)
+@UseGuards(AuthGuard, TenantGuard, RolesGuard, ActiveGymGuard)
 export class AttendanceController {
   constructor(private readonly attendanceService: AttendanceService) {}
 
   /**
-   * Tap to mark attendance (from member app or front desk)
+   * Tap to mark attendance at the front desk (strictly restricted to authorized staff scanning at reception desk)
    */
   @Post('tap')
   @Roles('owner', 'manager', 'front_desk')

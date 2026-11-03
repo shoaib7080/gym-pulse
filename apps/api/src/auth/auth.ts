@@ -1,5 +1,6 @@
 import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
+import { bearer } from "better-auth/plugins";
 import { Pool } from "pg";
 import { drizzle } from "drizzle-orm/node-postgres";
 import * as schema from "../db/schema";
@@ -8,10 +9,16 @@ import * as path from "path";
 
 dotenv.config({ path: path.join(__dirname, "../../.env") });
 
+const isTestEnv = process.env.NODE_ENV === 'test';
+const isProd = process.env.NODE_ENV === 'production';
+
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
+  max: 5,
   ssl: process.env.DATABASE_URL?.includes("sslmode=require")
-    ? { rejectUnauthorized: false }
+    ? isProd
+      ? { rejectUnauthorized: true }
+      : { rejectUnauthorized: false }
     : undefined,
 });
 
@@ -26,9 +33,6 @@ const trustedOrigins = process.env.TRUSTED_ORIGINS
       'http://127.0.0.1:5173',
     ];
 
-const isTestEnv = process.env.NODE_ENV === 'test';
-const isProd = process.env.NODE_ENV === 'production';
-
 export const auth = betterAuth({
   database: drizzleAdapter(db, {
     provider: 'pg',
@@ -41,7 +45,9 @@ export const auth = betterAuth({
   }),
   emailAndPassword: {
     enabled: true,
+    minPasswordLength: 10,
   },
+  plugins: [bearer()],
   trustedOrigins,
   advanced: {
     disableCSRFCheck: isTestEnv,
@@ -51,3 +57,4 @@ export const auth = betterAuth({
   baseURL: process.env.BETTER_AUTH_URL || 'http://localhost:3000',
   basePath: '/v1/auth',
 });
+

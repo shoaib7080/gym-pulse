@@ -1,6 +1,11 @@
 /**
  * Business date utilities for GymPulse (inclusive date logic in gym local timezone)
+ *
+ * Implements Step 6 of Hardening Guide:
+ * Month-end inclusive date arithmetic utilizing date-fns for calendar month calculations.
  */
+
+import { getDaysInMonth } from 'date-fns';
 
 export function parseDateOnly(dateStr: string): Date {
   const [year, month, day] = dateStr.split('-').map(Number);
@@ -50,12 +55,99 @@ export function calculateInclusiveDays(startDateStr: string, endDateStr: string)
 }
 
 /**
- * Add days to a YYYY-MM-DD date string
+ * Add days to a YYYY-MM-DD date string using pure UTC arithmetic
  */
 export function addDays(dateStr: string, days: number): string {
-  const date = parseDateOnly(dateStr);
-  date.setUTCDate(date.getUTCDate() + days);
+  const [year, month, day] = dateStr.split('-').map(Number);
+  if (!year || !month || !day) {
+    throw new Error(`Invalid date string: ${dateStr}. Expected YYYY-MM-DD`);
+  }
+  const date = new Date(Date.UTC(year, month - 1, day + days));
   return formatDateOnly(date);
+}
+
+/**
+ * Adds months to a YYYY-MM-DD date string with clamping.
+ * target = start plus n months.
+ * If the start day does not exist in the target month (e.g. 31 Jan + 1 mo in Feb 2026),
+ * the day is clamped to the last day of the target month.
+ */
+export function addMonthsClamped(dateStr: string, months: number): string {
+  const [startY, startM, startD] = dateStr.split('-').map(Number);
+  if (!startY || !startM || !startD) {
+    throw new Error(`Invalid date string: ${dateStr}. Expected YYYY-MM-DD`);
+  }
+
+  const totalMonths = (startY * 12 + (startM - 1)) + months;
+  const targetYear = Math.floor(totalMonths / 12);
+  const targetMonthIndex = ((totalMonths % 12) + 12) % 12;
+  const targetMonth = targetMonthIndex + 1;
+
+  // Use date-fns getDaysInMonth for battle-tested calendar lengths
+  const maxDaysInTarget = getDaysInMonth(new Date(targetYear, targetMonthIndex, 1));
+  const targetDay = Math.min(startD, maxDaysInTarget);
+
+  const y = String(targetYear).padStart(4, '0');
+  const m = String(targetMonth).padStart(2, '0');
+  const d = String(targetDay).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+/**
+ * Computes inclusive membership end date:
+ * - Units:
+ *   - 'day': end = start + value - 1 days
+ *   - 'month':
+ *       target = start plus n months.
+ *       If start day did not exist in target month (clamping happened),
+ *         end = last day of target month (e.g., 31 Jan, 1 month ends 28 Feb 2026; 30 Jan ends 28 Feb 2026; 31 Mar ends 30 Apr).
+ *       If start day existed in target month (no clamping),
+ *         end = target minus 1 day (e.g., 15 Jan, 1 month ends 14 Feb; 28 Feb, 1 month ends 27 Mar).
+ *   - 'year': 12 months per year (e.g., 29 Feb 2028 for 12 months ends 28 Feb 2029; 28 Feb 2027 ends 27 Feb 2028).
+ */
+export function computeInclusiveEndDate(
+  startDateStr: string,
+  unit: 'day' | 'month' | 'year' | string,
+  value: number,
+): string {
+  if (value <= 0) {
+    throw new Error(`Duration value must be positive, got ${value}`);
+  }
+
+  if (unit === 'day') {
+    return addDays(startDateStr, value - 1);
+  }
+
+  const months = unit === 'year' ? value * 12 : value;
+  if (unit === 'month' || unit === 'year') {
+    const [startY, startM, startD] = startDateStr.split('-').map(Number);
+    if (!startY || !startM || !startD) {
+      throw new Error(`Invalid date string: ${startDateStr}. Expected YYYY-MM-DD`);
+    }
+
+    const totalMonths = (startY * 12 + (startM - 1)) + months;
+    const targetYear = Math.floor(totalMonths / 12);
+    const targetMonthIndex = ((totalMonths % 12) + 12) % 12;
+    const targetMonth = targetMonthIndex + 1;
+
+    // Use date-fns getDaysInMonth
+    const maxDaysInTarget = getDaysInMonth(new Date(targetYear, targetMonthIndex, 1));
+    const wasClamped = startD > maxDaysInTarget;
+
+    if (wasClamped) {
+      // Clamping happened: end is the last day of target month
+      const y = String(targetYear).padStart(4, '0');
+      const m = String(targetMonth).padStart(2, '0');
+      const d = String(maxDaysInTarget).padStart(2, '0');
+      return `${y}-${m}-${d}`;
+    } else {
+      // No clamping: target is targetYear-targetMonth-startD, end = target - 1 day
+      const targetStr = `${String(targetYear).padStart(4, '0')}-${String(targetMonth).padStart(2, '0')}-${String(startD).padStart(2, '0')}`;
+      return addDays(targetStr, -1);
+    }
+  }
+
+  throw new Error(`Unsupported duration unit: ${unit}. Supported units: 'day', 'month', 'year'`);
 }
 
 export interface FreezeMathResult {

@@ -1,15 +1,24 @@
 import React, { useEffect, useState } from 'react';
 import { SidebarProvider } from '../../context/SidebarContext';
+import { useAuth } from '../../context/AuthContext';
 import { Sidebar } from './Sidebar';
 import { Header } from './Header';
+import { ExplorerBanner } from './ExplorerBanner';
 
 interface DashboardLayoutProps {
   children: React.ReactNode;
   activeNav: string;
   onNavSelect: (id: string) => void;
+  onRegisterGymClick?: () => void;
 }
 
-export function DashboardLayout({ children, activeNav, onNavSelect }: DashboardLayoutProps) {
+export function DashboardLayout({
+  children,
+  activeNav,
+  onNavSelect,
+  onRegisterGymClick,
+}: DashboardLayoutProps) {
+  const { activeGymId } = useAuth();
   const [isSearchModalOpen, setIsSearchModalOpen] = useState(false);
 
   // Global Ctrl+K / Cmd+K keyboard shortcut listener
@@ -30,7 +39,7 @@ export function DashboardLayout({ children, activeNav, onNavSelect }: DashboardL
   return (
     <SidebarProvider>
       {/* 
-        Requirement 1: Pure Flexbox Shell
+        Pure Flexbox Shell
         Structure the root dashboard using a full-screen flex layout (`h-screen flex overflow-hidden`).
       */}
       <div className="h-screen w-screen flex overflow-hidden bg-surface text-on-surface">
@@ -38,14 +47,22 @@ export function DashboardLayout({ children, activeNav, onNavSelect }: DashboardL
         <Sidebar activeNav={activeNav} onNavSelect={onNavSelect} />
 
         {/* 
-          Requirement 1: Main Content Container
-          The main content container must use `flex-1 min-w-0 flex flex-col` 
-          so that data-dense children (such as TanStack Table or charts) 
+          Main Content Container
+          Must use `flex-1 min-w-0 flex flex-col` so that data-dense children 
           automatically resize and expand without horizontal layout breaking or clipping.
         */}
         <div className="flex-1 min-w-0 flex flex-col h-full overflow-hidden">
           {/* Sticky Header Bar */}
-          <Header onSearchClick={() => setIsSearchModalOpen(true)} />
+          <Header
+            onSearchClick={() => setIsSearchModalOpen(true)}
+            onRegisterGymClick={onRegisterGymClick}
+            onNavSelect={onNavSelect}
+          />
+
+          {/* Persistent Sleek Explorer Preview Notification Bar mounted directly below Header */}
+          {!activeGymId && onRegisterGymClick && (
+            <ExplorerBanner onRegisterClick={onRegisterGymClick} />
+          )}
 
           {/* Scrollable Main Viewport */}
           <main className="flex-1 min-w-0 overflow-y-auto overflow-x-hidden">
@@ -80,49 +97,93 @@ export function DashboardLayout({ children, activeNav, onNavSelect }: DashboardL
             </div>
 
             <div className="flex flex-col gap-1 text-xs text-on-surface-variant max-h-64 overflow-y-auto pt-1">
-              <div className="px-3 py-1 text-[10px] uppercase font-bold text-outline">Quick Jump</div>
+              <div className="px-3 py-1 text-[10px] uppercase font-bold text-outline">Quick Navigation</div>
               <button
                 type="button"
                 onClick={() => {
-                  onNavSelect('bento');
+                  onNavSelect('overview');
                   setIsSearchModalOpen(false);
                 }}
-                className="flex items-center justify-between px-3 py-2 rounded-lg hover:bg-surface-container hover:text-on-surface text-left"
+                className="flex items-center justify-between px-3 py-2 rounded-lg hover:bg-surface-container hover:text-on-surface text-left cursor-pointer"
               >
-                <span>Live Membership & Access Pulse (Bento Hub)</span>
+                <span>Overview Dashboard Hub (/dashboard)</span>
                 <span className="text-primary font-mono text-[10px]">Jump →</span>
               </button>
               <button
                 type="button"
                 onClick={() => {
-                  onNavSelect('operations');
+                  onNavSelect('desk');
                   setIsSearchModalOpen(false);
                 }}
-                className="flex items-center justify-between px-3 py-2 rounded-lg hover:bg-surface-container hover:text-on-surface text-left"
+                className="flex items-center justify-between px-3 py-2 rounded-lg hover:bg-surface-container hover:text-on-surface text-left cursor-pointer"
               >
-                <span>Active Member Directory & Turnstile Feed</span>
+                <span>Front Desk Turnstile &amp; Access (/desk)</span>
                 <span className="text-primary font-mono text-[10px]">Jump →</span>
               </button>
               <button
                 type="button"
                 onClick={() => {
-                  onNavSelect('compliance');
+                  onNavSelect('members');
                   setIsSearchModalOpen(false);
                 }}
-                className="flex items-center justify-between px-3 py-2 rounded-lg hover:bg-surface-container hover:text-on-surface text-left"
+                className="flex items-center justify-between px-3 py-2 rounded-lg hover:bg-surface-container hover:text-on-surface text-left cursor-pointer"
               >
-                <span>Platform Admin Verification & Compliance</span>
+                <span>Registered Member Directory (/members)</span>
                 <span className="text-primary font-mono text-[10px]">Jump →</span>
               </button>
               <button
                 type="button"
                 onClick={() => {
-                  onNavSelect('gallery');
+                  onNavSelect('plans');
                   setIsSearchModalOpen(false);
                 }}
-                className="flex items-center justify-between px-3 py-2 rounded-lg hover:bg-surface-container hover:text-on-surface text-left"
+                className="flex items-center justify-between px-3 py-2 rounded-lg hover:bg-surface-container hover:text-on-surface text-left cursor-pointer"
               >
-                <span>Stitch Designs & Generated Code Gallery</span>
+                <span>Membership Plans &amp; Pricing (/plans)</span>
+                <span className="text-primary font-mono text-[10px]">Jump →</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  onNavSelect('freezes');
+                  setIsSearchModalOpen(false);
+                }}
+                className="flex items-center justify-between px-3 py-2 rounded-lg hover:bg-surface-container hover:text-on-surface text-left cursor-pointer"
+              >
+                <span>Freeze Requests &amp; Approvals (/freezes)</span>
+                <span className="text-primary font-mono text-[10px]">Jump →</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  onNavSelect('shifts');
+                  setIsSearchModalOpen(false);
+                }}
+                className="flex items-center justify-between px-3 py-2 rounded-lg hover:bg-surface-container hover:text-on-surface text-left cursor-pointer"
+              >
+                <span>Front Desk Shifts &amp; Cash Reconciliation (/shifts)</span>
+                <span className="text-primary font-mono text-[10px]">Jump →</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  onNavSelect('invoices');
+                  setIsSearchModalOpen(false);
+                }}
+                className="flex items-center justify-between px-3 py-2 rounded-lg hover:bg-surface-container hover:text-on-surface text-left cursor-pointer"
+              >
+                <span>UAE VAT Tax Invoices &amp; Receipts (/invoices)</span>
+                <span className="text-primary font-mono text-[10px]">Jump →</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  onNavSelect('settings');
+                  setIsSearchModalOpen(false);
+                }}
+                className="flex items-center justify-between px-3 py-2 rounded-lg hover:bg-surface-container hover:text-on-surface text-left cursor-pointer"
+              >
+                <span>Facility Settings &amp; Staff Provisioning (/settings)</span>
                 <span className="text-primary font-mono text-[10px]">Jump →</span>
               </button>
             </div>

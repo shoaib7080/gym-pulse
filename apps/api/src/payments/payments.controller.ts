@@ -4,12 +4,14 @@ import {
   Get,
   Param,
   Post,
+  Query,
   UseGuards,
 } from '@nestjs/common';
 import { AuthGuard } from '../common/guards/auth.guard';
 import { TenantGuard } from '../common/guards/tenant.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
 import { Roles } from '../common/decorators/roles.decorator';
+import { AllowInactiveGym } from '../common/decorators/allow-inactive-gym.decorator';
 import { CurrentTenant, type TenantContext } from '../common/decorators/current-tenant.decorator';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { PaymentsService } from './payments.service';
@@ -17,7 +19,7 @@ import { PaymentsService } from './payments.service';
 import { ActiveGymGuard } from '../common/guards/active-gym.guard';
 
 @Controller('payments')
-@UseGuards(AuthGuard, TenantGuard, RolesGuard)
+@UseGuards(AuthGuard, TenantGuard, RolesGuard, ActiveGymGuard)
 export class PaymentsController {
   constructor(private readonly paymentsService: PaymentsService) {}
 
@@ -26,20 +28,41 @@ export class PaymentsController {
    * Generates sequential gapless tax invoice and activates membership
    */
   @Post('desk')
-  @UseGuards(ActiveGymGuard)
   @Roles('owner', 'manager', 'front_desk')
   async createDeskPayment(
     @CurrentTenant() tenant: TenantContext,
     @CurrentUser() user: { id: string },
     @Body() body: unknown,
   ) {
-    return this.paymentsService.createDeskPayment(tenant.gymId, body, user?.id);
+    return this.paymentsService.createDeskPayment(tenant.gymId, body, user?.id, tenant.role);
+  }
+
+  /**
+   * List member tax invoices and receipts
+   */
+  @Get('invoices')
+  @AllowInactiveGym()
+  @Roles('owner', 'manager', 'front_desk')
+  async listInvoices(
+    @CurrentTenant() tenant: TenantContext,
+    @Query('docType') docType?: string,
+    @Query('search') search?: string,
+    @Query('limit') limit?: string,
+    @Query('offset') offset?: string,
+  ) {
+    return this.paymentsService.listInvoices(tenant.gymId, {
+      docType,
+      search,
+      limit: limit ? parseInt(limit, 10) : undefined,
+      offset: offset ? parseInt(offset, 10) : undefined,
+    });
   }
 
   /**
    * Get payment details and attached invoice
    */
   @Get(':id')
+  @AllowInactiveGym()
   @Roles('owner', 'manager', 'front_desk')
   async getPaymentById(
     @CurrentTenant() tenant: TenantContext,
@@ -49,16 +72,16 @@ export class PaymentsController {
   }
 
   /**
-   * Void a payment (Owner or Manager only)
+   * Void a payment (Owner only with mandatory reason and open shift)
    */
   @Post(':id/void')
-  @Roles('owner', 'manager')
+  @Roles('owner')
   async voidPayment(
     @CurrentTenant() tenant: TenantContext,
     @CurrentUser() user: { id: string },
     @Param('id') paymentId: string,
     @Body() body: unknown,
   ) {
-    return this.paymentsService.voidPayment(tenant.gymId, paymentId, body, user?.id);
+    return this.paymentsService.voidPayment(tenant.gymId, paymentId, body, user?.id, tenant.role);
   }
 }

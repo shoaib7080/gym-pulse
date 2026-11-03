@@ -11,9 +11,11 @@ import { Roles } from '../common/decorators/roles.decorator';
 import { CurrentTenant, type TenantContext } from '../common/decorators/current-tenant.decorator';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { ReportsService } from './reports.service';
+import { AllowInactiveGym } from '../common/decorators/allow-inactive-gym.decorator';
+import { ActiveGymGuard } from '../common/guards/active-gym.guard';
 
 @Controller('reports')
-@UseGuards(AuthGuard, TenantGuard, RolesGuard)
+@UseGuards(AuthGuard, TenantGuard, RolesGuard, ActiveGymGuard)
 export class ReportsController {
   constructor(private readonly reportsService: ReportsService) {}
 
@@ -48,6 +50,7 @@ export class ReportsController {
    * Accessible by: owner, manager
    */
   @Get('revenue')
+  @AllowInactiveGym()
   @Roles('owner', 'manager')
   async getRevenueReport(
     @CurrentTenant() tenant: TenantContext,
@@ -98,5 +101,19 @@ export class ReportsController {
       endDate,
       staffUserId,
     });
+  }
+
+  /**
+   * Real-time Gym Floor Occupancy & Operational Desk Telemetry (90-Minute Rolling Decay)
+   * Accessible by: owner, manager, front_desk (Staff operations view - 100% zero financial telemetry)
+   */
+  @Get('occupancy')
+  @AllowInactiveGym()
+  @Roles('owner', 'manager', 'front_desk')
+  async getOccupancyReport(
+    @CurrentTenant() tenant: TenantContext,
+    @Query('branchId') branchId?: string,
+  ) {
+    return this.reportsService.getOccupancyReport(tenant.gymId, branchId);
   }
 }

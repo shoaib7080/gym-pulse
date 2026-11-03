@@ -1,6 +1,9 @@
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
+  HttpException,
+  HttpStatus,
   Inject,
   Injectable,
   Logger,
@@ -11,23 +14,33 @@ import { DB, type Database } from '../db/db.module';
 import {
   freezePolicies,
   freezeProofs,
+  gymDailyRuns,
   gyms,
+  managerPins,
   membershipAdjustments,
   membershipFreezes,
   memberships,
   plans,
+  staffAssignments,
+  staffBranchAccess,
   users,
 } from '../db/schema';
 import {
   addDays,
+  addMonthsClamped,
+  attachProofSchema,
+  computeInclusiveEndDate,
   calculateFreezeMath,
   calculateInclusiveDays,
+  createProofTargetSchema,
   formatDateOnly,
   type CreateFreezeInput,
   type EarlyLiftFreezeInput,
   type FreezePreviewInput,
 } from '@gympulse/shared';
 import { AuditService } from '../common/audit/audit.service';
+import { verifyPin } from '../common/crypto/pin-hasher';
+import { STORAGE_SERVICE, type StorageService } from '../common/storage/storage.interface';
 import { scopeEntityToGym, scopeToGym } from '../common/tenant/tenant-scope.helper';
 import { getGymLocalDate } from '../common/utils/dates';
 import { SubscriptionsService } from '../subscriptions/subscriptions.service';
@@ -79,6 +92,7 @@ export class FreezesService {
 
   constructor(
     @Inject(DB) private readonly db: Database,
+    @Inject(STORAGE_SERVICE) private readonly storageService: StorageService,
     private readonly auditService: AuditService,
     private readonly subscriptionsService: SubscriptionsService,
   ) {}
@@ -117,7 +131,8 @@ export class FreezesService {
     gymId: string,
     membershipId: string,
     asOfDate?: string,
-  ) {
+  ): Promise<{ activated: number; completed: number; expired: number }> {
+    const counts = { activated: 0, completed: 0, expired: 0 };
     const gym = await this.db.query.gyms.findFirst({
       where: eq(gyms.id, gymId),
     });
@@ -126,7 +141,7 @@ export class FreezesService {
     const membership = await this.db.query.memberships.findFirst({
       where: scopeEntityToGym(memberships, gymId, membershipId),
     });
-    if (!membership) return;
+    if (!membership) return counts;
 
     // 1. Notice-period cancellation whose effective date has arrived
     if (
@@ -160,19 +175,22 @@ export class FreezesService {
             ),
           );
 
-        await this.auditService.log({
-          gymId,
-          actorUserId: null,
-          action: 'membership.cancel_effective',
-          entityType: 'membership',
-          entityId: membershipId,
-          payload: {
-            cancelEffectiveDate: membership.cancelEffectiveDate,
-            settledOn: today,
+        await this.auditService.log(
+          {
+            gymId,
+            actorUserId: null,
+            action: 'membership.cancel_effective',
+            entityType: 'membership',
+            entityId: membershipId,
+            payload: {
+              cancelEffectiveDate: membership.cancelEffectiveDate,
+              settledOn: today,
+            },
           },
-        });
+          tx,
+        );
       });
-      return;
+      return counts;
     }
 
     // 2. Expire pending_review requests whose start date has passed
@@ -194,6 +212,8 @@ export class FreezesService {
           updatedAt: new Date(),
         })
         .where(scopeEntityToGym(membershipFreezes, gymId, f.id));
+
+      counts.expired += 1;
 
       await this.auditService.log({
         gymId,
@@ -261,20 +281,24 @@ export class FreezesService {
           createdBy: null,
         });
 
-        await this.auditService.log({
-          gymId,
-          actorUserId: null,
-          action: 'freeze.complete',
-          entityType: 'membership_freeze',
-          entityId: f.id,
-          payload: {
-            daysCharged: N,
-            previousEndDate,
-            newEndDate,
-            today,
+        await this.auditService.log(
+          {
+            gymId,
+            actorUserId: null,
+            action: 'freeze.complete',
+            entityType: 'membership_freeze',
+            entityId: f.id,
+            payload: {
+              daysCharged: N,
+              previousEndDate,
+              newEndDate,
+              today,
+            },
           },
-        });
+          tx,
+        );
       });
+      counts.completed += 1;
     }
 
     // 4. Activate due scheduled freezes
@@ -314,19 +338,25 @@ export class FreezesService {
             .where(scopeEntityToGym(memberships, gymId, membershipId));
         }
 
-        await this.auditService.log({
-          gymId,
-          actorUserId: null,
-          action: 'freeze.activate',
-          entityType: 'membership_freeze',
-          entityId: f.id,
-          payload: {
-            startDate: f.startDate,
-            today,
+        await this.auditService.log(
+          {
+            gymId,
+            actorUserId: null,
+            action: 'freeze.activate',
+            entityType: 'membership_freeze',
+            entityId: f.id,
+            payload: {
+              startDate: f.startDate,
+              today,
+            },
           },
-        });
+          tx,
+        );
       });
+      counts.activated += 1;
     }
+
+    return counts;
   }
 
   /**
@@ -337,6 +367,26 @@ export class FreezesService {
       where: eq(gyms.id, gymId),
     });
     const today = asOfDate || getGymLocalDate(gym?.timezone || 'Asia/Dubai');
+
+    // Check if gym_daily_runs already has a successful run for this gym & local date
+    const existingRun = await this.db.query.gymDailyRuns.findFirst({
+      where: and(
+        eq(gymDailyRuns.gymId, gymId),
+        eq(gymDailyRuns.localDate, today),
+        eq(gymDailyRuns.status, 'success'),
+      ),
+    });
+
+    if (existingRun && !asOfDate) {
+      return {
+        gymId,
+        alreadyProcessed: true,
+        asOfDate: today,
+        freezesActivated: existingRun.freezesActivated,
+        freezesCompleted: existingRun.freezesCompleted,
+        freezesExpired: existingRun.freezesExpired,
+      };
+    }
 
     const relevantFreezes = await this.db.query.membershipFreezes.findMany({
       where: and(
@@ -361,15 +411,97 @@ export class FreezesService {
     }
 
     let settledCount = 0;
-    for (const mId of membershipIds) {
-      await this.settleDueFreezesForMembership(gymId, mId, today);
-      settledCount++;
+    let totalActivated = 0;
+    let totalCompleted = 0;
+    let totalExpired = 0;
+
+    try {
+      for (const mId of membershipIds) {
+        const counts = await this.settleDueFreezesForMembership(gymId, mId, today);
+        totalActivated += counts.activated;
+        totalCompleted += counts.completed;
+        totalExpired += counts.expired;
+        settledCount++;
+      }
+
+      // Record daily run record
+      await this.db
+        .insert(gymDailyRuns)
+        .values({
+          gymId,
+          localDate: today,
+          processedAt: new Date(),
+          freezesActivated: totalActivated,
+          freezesCompleted: totalCompleted,
+          freezesExpired: totalExpired,
+          status: 'success',
+        })
+        .onConflictDoUpdate({
+          target: [gymDailyRuns.gymId, gymDailyRuns.localDate],
+          set: {
+            processedAt: new Date(),
+            freezesActivated: totalActivated,
+            freezesCompleted: totalCompleted,
+            freezesExpired: totalExpired,
+            status: 'success',
+            errorMessage: null,
+          },
+        });
+
+      return {
+        gymId,
+        settledMembershipsCount: settledCount,
+        freezesActivated: totalActivated,
+        freezesCompleted: totalCompleted,
+        freezesExpired: totalExpired,
+        asOfDate: today,
+      };
+    } catch (err: any) {
+      await this.db
+        .insert(gymDailyRuns)
+        .values({
+          gymId,
+          localDate: today,
+          processedAt: new Date(),
+          freezesActivated: totalActivated,
+          freezesCompleted: totalCompleted,
+          freezesExpired: totalExpired,
+          status: 'failed',
+          errorMessage: err?.message || 'Unknown error during settlement',
+        })
+        .onConflictDoUpdate({
+          target: [gymDailyRuns.gymId, gymDailyRuns.localDate],
+          set: {
+            processedAt: new Date(),
+            status: 'failed',
+            errorMessage: err?.message || 'Unknown error during settlement',
+          },
+        });
+      throw err;
+    }
+  }
+
+  /**
+   * Automated scheduler / background worker settlement across all active gyms
+   */
+  async settleDueFreezesForAllGyms(asOfDate?: string) {
+    const activeGyms = await this.db.query.gyms.findMany({
+      where: eq(gyms.status, 'active'),
+    });
+
+    const results = [];
+    for (const g of activeGyms) {
+      try {
+        const res = await this.settleDueFreezesForGym(g.id, asOfDate);
+        results.push(res);
+      } catch (err: any) {
+        this.logger.error(`[FreezeScheduler] Failed settling freezes for gym ${g.id}: ${err?.message}`);
+      }
     }
 
     return {
-      gymId,
-      settledMembershipsCount: settledCount,
-      asOfDate: today,
+      totalGymsProcessed: activeGyms.length,
+      gyms: results,
     };
   }
 
@@ -448,11 +580,8 @@ export class FreezesService {
         anniversaryYear -= 1;
       }
       anniversaryYear = Math.max(0, anniversaryYear);
-      const curCycleStart = new Date(Date.UTC(startY + anniversaryYear, startM - 1, startD));
-      const nextCycleStart = new Date(Date.UTC(startY + anniversaryYear + 1, startM - 1, startD));
-      nextCycleStart.setUTCDate(nextCycleStart.getUTCDate() - 1);
-      cycleStartDate = formatDateOnly(curCycleStart);
-      cycleEndDate = formatDateOnly(nextCycleStart);
+      cycleStartDate = addMonthsClamped(membership.startDate, anniversaryYear * 12);
+      cycleEndDate = computeInclusiveEndDate(cycleStartDate, 'year', 1);
     }
 
     const activeOrHistoricalFreezes = existingFreezes.filter(
@@ -814,23 +943,26 @@ export class FreezesService {
         }
       }
 
-      // 9. Append audit log
-      await this.auditService.log({
-        gymId,
-        actorUserId: actorUserId ?? null,
-        action: 'freeze.request',
-        entityType: 'membership_freeze',
-        entityId: newFreeze.id,
-        payload: {
-          membershipId,
-          startDate: input.startDate,
-          endDate: input.endDate,
-          initialStatus,
-          reasonCode: input.reasonCode,
-          noticeWaived: canWaiveNotice && input.startDate < addDays(today, eligibility.policy?.noticeDays ?? 0),
-          waivedBy: canWaiveNotice ? actorUserId : null,
+      // 9. Append audit log inside transaction
+      await this.auditService.log(
+        {
+          gymId,
+          actorUserId: actorUserId ?? null,
+          action: 'freeze.request',
+          entityType: 'membership_freeze',
+          entityId: newFreeze.id,
+          payload: {
+            membershipId,
+            startDate: input.startDate,
+            endDate: input.endDate,
+            initialStatus,
+            reasonCode: input.reasonCode,
+            noticeWaived: canWaiveNotice && input.startDate < addDays(today, eligibility.policy?.noticeDays ?? 0),
+            waivedBy: canWaiveNotice ? actorUserId : null,
+          },
         },
-      });
+        tx,
+      );
 
       return newFreeze;
     });
@@ -1048,19 +1180,31 @@ export class FreezesService {
         }
       }
 
-      await this.auditService.log({
-        gymId,
-        actorUserId: actorUserId ?? null,
-        action: 'freeze.approve',
-        entityType: 'membership_freeze',
-        entityId: freezeId,
-        payload: {
-          previousStatus: freeze.status,
-          newStatus,
-          startDate: freeze.startDate,
-          endDate: freeze.endDate,
+      // Cascade proof review status: verified, deleteAfter: 30 days
+      await tx
+        .update(freezeProofs)
+        .set({
+          reviewStatus: 'verified',
+          deleteAfter: addDays(today, 30),
+        })
+        .where(and(eq(freezeProofs.gymId, gymId), eq(freezeProofs.freezeId, freezeId)));
+
+      await this.auditService.log(
+        {
+          gymId,
+          actorUserId: actorUserId ?? null,
+          action: 'freeze.approve',
+          entityType: 'membership_freeze',
+          entityId: freezeId,
+          payload: {
+            previousStatus: freeze.status,
+            newStatus,
+            startDate: freeze.startDate,
+            endDate: freeze.endDate,
+          },
         },
-      });
+        tx,
+      );
 
       return updated;
     });
@@ -1098,30 +1242,47 @@ export class FreezesService {
       });
     }
 
-    const [updated] = await this.db
-      .update(membershipFreezes)
-      .set({
-        status: 'rejected',
-        rejectionReason: rejectionReason.trim(),
-        reviewedBy: toUuidOrNull(actorUserId),
-        reviewedAt: new Date(),
-        updatedAt: new Date(),
-      })
-      .where(scopeEntityToGym(membershipFreezes, gymId, freezeId))
-      .returning();
+    return await this.db.transaction(async (tx) => {
+      const [updated] = await tx
+        .update(membershipFreezes)
+        .set({
+          status: 'rejected',
+          rejectionReason: rejectionReason.trim(),
+          reviewedBy: toUuidOrNull(actorUserId),
+          reviewedAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(scopeEntityToGym(membershipFreezes, gymId, freezeId))
+        .returning();
 
-    await this.auditService.log({
-      gymId,
-      actorUserId: actorUserId ?? null,
-      action: 'freeze.reject',
-      entityType: 'membership_freeze',
-      entityId: freezeId,
-      payload: {
-        rejectionReason: rejectionReason.trim(),
-      },
+      const gym = await tx.query.gyms.findFirst({ where: eq(gyms.id, gymId) });
+      const today = getGymLocalDate(gym?.timezone || 'Asia/Dubai');
+
+      // Cascade proof review status: rejected, deleteAfter: 30 days
+      await tx
+        .update(freezeProofs)
+        .set({
+          reviewStatus: 'rejected',
+          deleteAfter: addDays(today, 30),
+        })
+        .where(and(eq(freezeProofs.gymId, gymId), eq(freezeProofs.freezeId, freezeId)));
+
+      await this.auditService.log(
+        {
+          gymId,
+          actorUserId: actorUserId ?? null,
+          action: 'freeze.reject',
+          entityType: 'membership_freeze',
+          entityId: freezeId,
+          payload: {
+            rejectionReason: rejectionReason.trim(),
+          },
+        },
+        tx,
+      );
+
+      return updated;
     });
-
-    return updated;
   }
 
   /**
@@ -1231,17 +1392,21 @@ export class FreezesService {
           .where(scopeEntityToGym(membershipFreezes, gymId, freezeId))
           .returning();
 
-        await this.auditService.log({
-          gymId,
-          actorUserId: actorUserId ?? null,
-          action: 'freeze.cancel_before_start',
-          entityType: 'membership_freeze',
-          entityId: freeze.id,
-          payload: {
-            liftedOn: effectiveLiftedOn,
-            daysCharged: 0,
+        await this.auditService.log(
+          {
+            gymId,
+            actorUserId: actorUserId ?? null,
+            actorRole,
+            action: 'freeze.cancel_before_start',
+            entityType: 'membership_freeze',
+            entityId: freeze.id,
+            payload: {
+              liftedOn: effectiveLiftedOn,
+              daysCharged: 0,
+            },
           },
-        });
+          tx,
+        );
 
         return {
           freeze: cancelledFreeze,
@@ -1252,18 +1417,7 @@ export class FreezesService {
       });
     }
 
-    // Front Desk PIN step-up validation: PIN is verified and NEVER logged
-    if (actorRole === 'front_desk') {
-      const expectedPin = (gym?.settings as any)?.managerPin || '1234';
-      if (!input.managerPin || input.managerPin !== expectedPin) {
-        throw new BadRequestException({
-          code: 'INVALID_MANAGER_PIN',
-          message: 'Manager PIN authorization required for front desk early lift',
-        });
-      }
-    }
-
-    // Fetch membership
+    // Fetch membership for date math and branch access checks
     const membership = await this.db.query.memberships.findFirst({
       where: scopeEntityToGym(memberships, gymId, freeze.membershipId),
     });
@@ -1272,6 +1426,136 @@ export class FreezesService {
         code: 'RESOURCE_NOT_FOUND',
         message: 'Membership not found',
       });
+    }
+
+    // Front Desk PIN step-up validation: verified against specified approver's scrypt hash
+    let approverUserId: string | null = null;
+
+    if (actorRole === 'front_desk') {
+      if (!input.approverUserId || !input.managerPin) {
+        throw new BadRequestException({
+          code: 'APPROVER_AND_PIN_REQUIRED',
+          message: 'Approver user ID and manager PIN are required for front desk early lift',
+        });
+      }
+
+      // Check approver staff assignment
+      const approverStaff = await this.db.query.staffAssignments.findFirst({
+        where: and(
+          eq(staffAssignments.gymId, gymId),
+          eq(staffAssignments.userId, input.approverUserId),
+          eq(staffAssignments.isActive, true),
+        ),
+      });
+
+      const isEligibleManager =
+        approverStaff && (approverStaff.role === 'owner' || approverStaff.role === 'manager');
+
+      // Check branch scoping if branch_scope is 'selected'
+      let branchAllowed = true;
+      if (isEligibleManager && approverStaff.branchScope === 'selected' && membership.branchId) {
+        const branchAccess = await this.db.query.staffBranchAccess.findFirst({
+          where: and(
+            eq(staffBranchAccess.staffAssignmentId, approverStaff.id),
+            eq(staffBranchAccess.branchId, membership.branchId),
+          ),
+        });
+        if (!branchAccess) {
+          branchAllowed = false;
+        }
+      }
+
+      if (!isEligibleManager || !branchAllowed) {
+        // Prevent username / approver enumeration with timing-safe dummy check
+        await verifyPin('dummy-pin', 'scrypt$16384$8$1$00000000000000000000000000000000$0000000000000000000000000000000000000000000000000000000000000000');
+        throw new BadRequestException({
+          code: 'INVALID_MANAGER_PIN',
+          message: 'Invalid manager PIN',
+        });
+      }
+
+      // Fetch manager_pins record for the approver
+      const pinRecord = await this.db.query.managerPins.findFirst({
+        where: and(
+          eq(managerPins.gymId, gymId),
+          eq(managerPins.userId, input.approverUserId),
+        ),
+      });
+
+      if (!pinRecord) {
+        throw new BadRequestException({
+          code: 'MANAGER_PIN_NOT_SET',
+          message: 'The selected manager does not have a PIN configured',
+        });
+      }
+
+      // Check 15-minute lockout
+      const now = new Date();
+      if (pinRecord.lockedUntil && pinRecord.lockedUntil > now) {
+        throw new HttpException(
+          {
+            code: 'PIN_LOCKED',
+            message: 'Manager PIN is locked due to too many failed attempts. Try again in 15 minutes.',
+          },
+          HttpStatus.LOCKED, // 423
+        );
+      }
+
+      // Verify PIN using scrypt & timingSafeEqual
+      const isMatch = await verifyPin(input.managerPin, pinRecord.pinHash);
+
+      if (!isMatch) {
+        const failedAttempts = (pinRecord.failedAttempts || 0) + 1;
+        if (failedAttempts >= 5) {
+          const lockedUntil = new Date(Date.now() + 15 * 60 * 1000);
+          await this.db
+            .update(managerPins)
+            .set({
+              failedAttempts,
+              lockedUntil,
+              updatedAt: new Date(),
+            })
+            .where(eq(managerPins.id, pinRecord.id));
+
+          throw new HttpException(
+            {
+              code: 'PIN_LOCKED',
+              message: 'Manager PIN is locked due to too many failed attempts. Try again in 15 minutes.',
+            },
+            HttpStatus.LOCKED, // 423
+          );
+        } else {
+          await this.db
+            .update(managerPins)
+            .set({
+              failedAttempts,
+              updatedAt: new Date(),
+            })
+            .where(eq(managerPins.id, pinRecord.id));
+
+          throw new BadRequestException({
+            code: 'INVALID_MANAGER_PIN',
+            message: 'Invalid manager PIN',
+          });
+        }
+      }
+
+      // Successful verification: reset failed attempts
+      if (pinRecord.failedAttempts > 0 || pinRecord.lockedUntil) {
+        await this.db
+          .update(managerPins)
+          .set({
+            failedAttempts: 0,
+            lockedUntil: null,
+            updatedAt: new Date(),
+          })
+          .where(eq(managerPins.id, pinRecord.id));
+      }
+
+      approverUserId = input.approverUserId;
+    } else {
+      // Owner or manager lifting directly needs no PIN
+      approverUserId = actorUserId ?? null;
     }
 
     // Date math
@@ -1376,23 +1660,28 @@ export class FreezesService {
         throw err;
       }
 
-      // 4. Append audit log (PIN is strictly excluded; authorizing manager recorded)
-      await this.auditService.log({
-        gymId,
-        actorUserId: actorUserId ?? null,
-        action: 'freeze.lift',
-        entityType: 'membership_freeze',
-        entityId: freeze.id,
-        payload: {
-          liftedOn: effectiveLiftedOn,
-          daysUsed,
-          daysCharged,
-          daysReturned,
-          previousEndDate,
-          newEndDate: projectedEndDate,
-          authorizingRole: actorRole,
+      // 4. Append audit log inside transaction (PIN is NEVER logged; approvedBy recorded)
+      await this.auditService.log(
+        {
+          gymId,
+          actorUserId: actorUserId ?? null,
+          actorRole,
+          action: 'freeze.lift',
+          entityType: 'membership_freeze',
+          entityId: freeze.id,
+          payload: {
+            liftedOn: effectiveLiftedOn,
+            daysUsed,
+            daysCharged,
+            daysReturned,
+            previousEndDate,
+            newEndDate: projectedEndDate,
+            approvedBy: approverUserId ?? actorUserId ?? null,
+            authorizingRole: actorRole,
+          },
         },
-      });
+        tx,
+      );
 
       return {
         freeze: updatedFreeze,
@@ -1405,52 +1694,77 @@ export class FreezesService {
   }
 
   /**
-   * Purge expired proofs older than deleteAfter date
+   * Create presigned/upload target for freeze proof document
    */
-  async purgeExpiredProofs(gymId: string) {
-    const gym = await this.db.query.gyms.findFirst({ where: eq(gyms.id, gymId) });
-    const today = getGymLocalDate(gym?.timezone || 'Asia/Dubai');
-
-    const expiredProofs = await this.db.query.freezeProofs.findMany({
-      where: and(
-        eq(freezeProofs.gymId, gymId),
-        sql`${freezeProofs.deleteAfter} < ${today}`,
-      ),
-    });
-
-    if (expiredProofs.length === 0) {
-      return { purgedCount: 0 };
+  async createProofTarget(
+    gymId: string,
+    freezeId: string,
+    input: {
+      mimeType: 'application/pdf' | 'image/jpeg' | 'image/png';
+      sizeBytes: number;
+    },
+  ) {
+    const parseRes = createProofTargetSchema.safeParse(input);
+    if (!parseRes.success) {
+      throw new BadRequestException({
+        code: 'VALIDATION_FAILED',
+        message: parseRes.error.issues[0]?.message || 'Invalid proof target input',
+        errors: parseRes.error.issues,
+      });
     }
 
-    const proofIds = expiredProofs.map((p) => p.id);
-    await this.db
-      .delete(freezeProofs)
-      .where(and(eq(freezeProofs.gymId, gymId), inArray(freezeProofs.id, proofIds)));
-
-    await this.auditService.log({
-      gymId,
-      action: 'freeze.proof_purge',
-      entityType: 'freeze_proof',
-      payload: { purgedCount: proofIds.length, today },
+    const freeze = await this.db.query.membershipFreezes.findFirst({
+      where: scopeEntityToGym(membershipFreezes, gymId, freezeId),
     });
+    if (!freeze) {
+      throw new NotFoundException({
+        code: 'RESOURCE_NOT_FOUND',
+        message: 'Freeze not found',
+      });
+    }
 
-    return { purgedCount: proofIds.length };
+    return this.storageService.createUploadTarget(
+      gymId,
+      freezeId,
+      input.mimeType,
+      input.sizeBytes,
+    );
   }
 
   /**
-   * Attach proof document to freeze (30-day retention post-verification)
+   * Attach proof document to freeze (90-day retention unreviewed)
+   * Enforces server-issued storage key format and file validation.
    */
   async attachProof(
     gymId: string,
     freezeId: string,
     input: {
       storageKey: string;
-      mimeType?: 'application/pdf' | 'image/jpeg' | 'image/png';
-      sizeBytes?: number;
-      sha256?: string;
+      mimeType: 'application/pdf' | 'image/jpeg' | 'image/png';
+      sizeBytes: number;
+      sha256: string;
     },
     actorUserId?: string,
   ) {
+    const parseRes = attachProofSchema.safeParse(input);
+    if (!parseRes.success) {
+      throw new BadRequestException({
+        code: 'VALIDATION_FAILED',
+        message: parseRes.error.issues[0]?.message || 'Invalid attach proof input',
+        errors: parseRes.error.issues,
+      });
+    }
+
+    // Strictly validate storageKey format: gyms/{gymId}/freezes/{freezeId}/{uuid}.{ext}
+    const expectedPrefix = `gyms/${gymId}/freezes/${freezeId}/`;
+    const keyRegex = new RegExp(`^gyms\\/${gymId}\\/freezes\\/${freezeId}\\/[a-f0-9-]+(\\.[a-z0-9]+)?$`, 'i');
+    if (!input.storageKey.startsWith(expectedPrefix) || !keyRegex.test(input.storageKey)) {
+      throw new BadRequestException({
+        code: 'INVALID_STORAGE_KEY',
+        message: 'Storage key is invalid or does not belong to this freeze',
+      });
+    }
+
     const freeze = await this.db.query.membershipFreezes.findFirst({
       where: scopeEntityToGym(membershipFreezes, gymId, freezeId),
     });
@@ -1473,11 +1787,11 @@ export class FreezesService {
         gymId,
         freezeId,
         storageKey: input.storageKey,
-        mimeType: input.mimeType ?? 'application/pdf',
-        sizeBytes: input.sizeBytes ?? 1024,
-        sha256: input.sha256 ?? 'sha256_placeholder',
+        mimeType: input.mimeType,
+        sizeBytes: input.sizeBytes,
+        sha256: input.sha256,
         reviewStatus: 'pending',
-        deleteAfter: addDays(today, 30),
+        deleteAfter: addDays(today, 90), // 90-day unreviewed retention
         uploadedBy: toUuidOrNull(actorUserId),
       })
       .returning();
@@ -1495,5 +1809,123 @@ export class FreezesService {
     });
 
     return proof;
+  }
+
+  /**
+   * Get short-lived download URL for proof document (Restricted to gym owner/manager)
+   */
+  async getProofDownload(
+    gymId: string,
+    freezeId: string,
+    proofId: string,
+    actorUserId?: string,
+    actorRole?: string,
+  ) {
+    if (actorRole !== 'owner' && actorRole !== 'manager') {
+      throw new ForbiddenException({
+        code: 'PROOF_VIEW_FORBIDDEN',
+        message: 'Viewing member proofs is strictly restricted to gym owners and managers',
+      });
+    }
+
+    const proof = await this.db.query.freezeProofs.findFirst({
+      where: and(
+        eq(freezeProofs.gymId, gymId),
+        eq(freezeProofs.freezeId, freezeId),
+        eq(freezeProofs.id, proofId),
+      ),
+    });
+
+    if (!proof) {
+      throw new NotFoundException({
+        code: 'RESOURCE_NOT_FOUND',
+        message: 'Proof document not found',
+      });
+    }
+
+    await this.auditService.log({
+      gymId,
+      actorUserId: actorUserId ?? null,
+      actorRole,
+      action: 'freeze_proof.view',
+      entityType: 'freeze_proof',
+      entityId: proofId,
+      payload: {
+        freezeId,
+        actorUserId,
+        actorRole,
+      },
+    });
+
+    return {
+      proofId: proof.id,
+      mimeType: proof.mimeType,
+      sizeBytes: proof.sizeBytes,
+      downloadUrl: await this.storageService.getDownloadUrl(proof.storageKey, 300),
+      expiresInSeconds: 300,
+    };
+  }
+
+  /**
+   * Purge expired proofs older than deleteAfter date
+   */
+  async purgeExpiredProofs(gymId: string, asOfDate?: string) {
+    const gym = await this.db.query.gyms.findFirst({ where: eq(gyms.id, gymId) });
+    const today = asOfDate || getGymLocalDate(gym?.timezone || 'Asia/Dubai');
+
+    const expiredProofs = await this.db.query.freezeProofs.findMany({
+      where: and(
+        eq(freezeProofs.gymId, gymId),
+        sql`${freezeProofs.deleteAfter} < ${today}`,
+      ),
+    });
+
+    if (expiredProofs.length === 0) {
+      return { purgedCount: 0 };
+    }
+
+    // Physical deletion of storage objects
+    for (const p of expiredProofs) {
+      try {
+        await this.storageService.delete(p.storageKey);
+      } catch (err: any) {
+        this.logger.warn(`Failed to delete storage file ${p.storageKey}: ${err?.message}`);
+      }
+    }
+
+    const proofIds = expiredProofs.map((p) => p.id);
+    await this.db
+      .delete(freezeProofs)
+      .where(and(eq(freezeProofs.gymId, gymId), inArray(freezeProofs.id, proofIds)));
+
+    await this.auditService.log({
+      gymId,
+      action: 'freeze_proof.purge',
+      entityType: 'freeze_proof',
+      payload: { purgedCount: proofIds.length, today },
+    });
+
+    return { purgedCount: proofIds.length };
+  }
+
+  /**
+   * Automated scheduler / background worker proof purge across all active gyms
+   */
+  async purgeExpiredProofsForAllGyms(asOfDate?: string) {
+    const activeGyms = await this.db.query.gyms.findMany({
+      where: eq(gyms.status, 'active'),
+    });
+
+    let totalPurged = 0;
+    for (const g of activeGyms) {
+      try {
+        const res = await this.purgeExpiredProofs(g.id, asOfDate);
+        totalPurged += res.purgedCount;
+      } catch (err: any) {
+        this.logger.error(`[FreezeScheduler] Failed purging proofs for gym ${g.id}: ${err?.message}`);
+      }
+    }
+
+    return { totalGymsProcessed: activeGyms.length, totalPurged };
   }
 }
