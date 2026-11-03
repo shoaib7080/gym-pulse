@@ -756,10 +756,92 @@ export class SubscriptionsService implements OnModuleInit {
     });
 
     if (!currentSub) {
-      throw new BadRequestException({
-        code: 'NO_ACTIVE_SUBSCRIPTION',
-        message: 'No active subscription found to change. Please contact platform support.',
+      const todayStr = getGymLocalDate('Asia/Dubai');
+      const periodEndStr = addDays(todayStr, plan.billingInterval === 'year' ? 365 : 30);
+      const [newSub] = await this.db
+        .insert(gymSubscriptions)
+        .values({
+          gymId,
+          saasPlanId: plan.id,
+          status: 'active',
+          periodStart: todayStr,
+          periodEnd: periodEndStr,
+          billingMethod: input.billingMethod || 'card_on_file',
+        })
+        .returning();
+
+      const counterSeries = 'GP-INV';
+      const seqResult = await this.db.execute(sql`
+        INSERT INTO platform_invoice_counters (series, next_number)
+        VALUES (${counterSeries}, 2)
+        ON CONFLICT (series) DO UPDATE
+        SET next_number = platform_invoice_counters.next_number + 1
+        RETURNING next_number - 1 AS assigned_number
+      `);
+      const rawNumber = Number(
+        (seqResult.rows[0] as { assigned_number: number | string }).assigned_number,
+      );
+      const invoiceNumber = `${counterSeries}-${String(rawNumber).padStart(6, '0')}`;
+      const subtotalMinor = plan.priceMinor;
+      const vatMinor = Math.round(subtotalMinor * 0.05);
+      const grandTotalMinor = subtotalMinor + vatMinor;
+
+      const gym = await this.db.query.gyms.findFirst({ where: eq(gyms.id, gymId) });
+
+      const [invoice] = await this.db
+        .insert(platformInvoices)
+        .values({
+          gymId,
+          subscriptionId: newSub.id,
+          docType: 'tax_invoice',
+          series: counterSeries,
+          number: rawNumber,
+          invoiceNumber,
+          issuedOn: todayStr,
+          dueOn: addDays(todayStr, 14),
+          supplier: PLATFORM_SUPPLIER,
+          buyer: {
+            name: gym?.legalName || gym?.tradeName || 'Gym Tenant',
+            trn: gym?.trnNumber || null,
+            address: 'United Arab Emirates',
+          },
+          lines: [
+            {
+              description: `GymPulse SaaS Platform Subscription - ${plan.name}`,
+              quantity: 1,
+              unitPriceMinor: subtotalMinor,
+              vatRatePercent: 5,
+              vatMinor,
+              totalMinor: grandTotalMinor,
+            },
+          ],
+          totals: {
+            subtotalMinor,
+            vatMinor,
+            grandTotalMinor,
+            currency: plan.currency,
+          },
+        })
+        .returning();
+
+      await this.auditService.log({
+        gymId,
+        action: 'SUBSCRIPTION_PROVISIONED',
+        entityType: 'gym_subscription',
+        entityId: newSub.id,
+        actorUserId,
+        payload: {
+          planId: plan.id,
+          planCode: plan.code,
+          invoiceNumber,
+        },
       });
+
+      return {
+        subscription: newSub,
+        invoice,
+        plan,
+      };
     }
 
     const [updated] = await this.db
@@ -824,20 +906,26 @@ export class SubscriptionsService implements OnModuleInit {
     if (!subInfo.hasActiveSubscription) {
       if (memberCount >= MEMBER_LIMIT_UNSUBSCRIBED) {
         throw new ForbiddenException({
-          code: 'MEMBER_LIMIT_UNSUBSCRIBED',
+          code: 'SUBSCRIPTION_LIMIT_REACHED',
           message: `Unsubscribed gyms are capped at ${MEMBER_LIMIT_UNSUBSCRIBED} members. Please subscribe to a SaaS plan to register more members.`,
-          currentCount: memberCount,
-          maxAllowed: MEMBER_LIMIT_UNSUBSCRIBED,
+          limit_key: 'max_members',
+          current_usage: memberCount,
+          max_allowed: MEMBER_LIMIT_UNSUBSCRIBED,
+          reason: 'unsubscribed_starter',
+          upgrade_required: true,
         });
       }
     } else if (subInfo.plan?.limits) {
       const maxAllowed = (subInfo.plan.limits as { maxMembers?: number }).maxMembers ?? 150;
       if (memberCount >= maxAllowed) {
         throw new ForbiddenException({
-          code: 'MEMBER_LIMIT_EXCEEDED',
+          code: 'SUBSCRIPTION_LIMIT_REACHED',
           message: `Current SaaS plan limit of ${maxAllowed} members reached. Please upgrade your subscription.`,
-          currentCount: memberCount,
-          maxAllowed,
+          limit_key: 'max_members',
+          current_usage: memberCount,
+          max_allowed: maxAllowed,
+          reason: 'tier_cap_exceeded',
+          upgrade_required: true,
         });
       }
     }
@@ -847,6 +935,10 @@ export class SubscriptionsService implements OnModuleInit {
    * Check if branch creation is allowed under current SaaS plan limits
    */
   async checkBranchLimit(gymId: string): Promise<void> {
+    const gym = await this.db.query.gyms.findFirst({
+      where: eq(gyms.id, gymId),
+    });
+
     const subInfo = await this.getGymSubscription(gymId);
 
     if (subInfo.isRestricted) {
@@ -857,14 +949,35 @@ export class SubscriptionsService implements OnModuleInit {
     }
 
     const branchCount = subInfo.usage.activeBranches;
+
+    // Sandbox check: Gym in pending_verification is capped at 2 branches
+    if (gym?.status === 'pending_verification') {
+      const sandboxBranchCap = 2;
+      if (branchCount >= sandboxBranchCap) {
+        throw new ForbiddenException({
+          code: 'SUBSCRIPTION_LIMIT_REACHED',
+          message: 'Unverified sandbox gyms are capped at 2 branches. Complete trade license verification to upgrade capacity.',
+          limit_key: 'max_branches',
+          current_usage: branchCount,
+          max_allowed: sandboxBranchCap,
+          reason: 'unverified_sandbox',
+          upgrade_required: true,
+        });
+      }
+      return;
+    }
+
     const maxAllowed = (subInfo.limits as { maxBranches?: number }).maxBranches ?? 1;
 
     if (branchCount >= maxAllowed) {
       throw new ForbiddenException({
-        code: 'BRANCH_LIMIT_EXCEEDED',
+        code: 'SUBSCRIPTION_LIMIT_REACHED',
         message: `Current SaaS plan limit of ${maxAllowed} branch(es) reached. Please upgrade your subscription.`,
-        currentCount: branchCount,
-        maxAllowed,
+        limit_key: 'max_branches',
+        current_usage: branchCount,
+        max_allowed: maxAllowed,
+        reason: subInfo.hasActiveSubscription ? 'tier_cap_exceeded' : 'unsubscribed_starter',
+        upgrade_required: true,
       });
     }
   }

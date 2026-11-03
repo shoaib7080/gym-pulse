@@ -39,6 +39,16 @@ export class SubscriptionsController {
   }
 
   /**
+   * List available SaaS plans for upgrading
+   * Accessible by: owner, manager
+   */
+  @Get('plans')
+  @Roles('owner', 'manager')
+  async listPlans() {
+    return this.subscriptionsService.listPlans();
+  }
+
+  /**
    * Request subscription plan upgrade or change
    * Accessible by: owner only
    */

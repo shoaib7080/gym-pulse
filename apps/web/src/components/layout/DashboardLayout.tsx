@@ -1,7 +1,9 @@
 import React, { useEffect, useState } from 'react';
 import { SidebarProvider } from '../../context/SidebarContext';
+import { useAuth } from '../../context/AuthContext';
 import { Sidebar } from './Sidebar';
 import { Header } from './Header';
+import { ExplorerBanner } from './ExplorerBanner';
 
 interface DashboardLayoutProps {
   children: React.ReactNode;
@@ -16,6 +18,7 @@ export function DashboardLayout({
   onNavSelect,
   onRegisterGymClick,
 }: DashboardLayoutProps) {
+  const { activeGymId } = useAuth();
   const [isSearchModalOpen, setIsSearchModalOpen] = useState(false);
 
   // Global Ctrl+K / Cmd+K keyboard shortcut listener
@@ -53,7 +56,13 @@ export function DashboardLayout({
           <Header
             onSearchClick={() => setIsSearchModalOpen(true)}
             onRegisterGymClick={onRegisterGymClick}
+            onNavSelect={onNavSelect}
           />
+
+          {/* Persistent Sleek Explorer Preview Notification Bar mounted directly below Header */}
+          {!activeGymId && onRegisterGymClick && (
+            <ExplorerBanner onRegisterClick={onRegisterGymClick} />
+          )}
 
           {/* Scrollable Main Viewport */}
           <main className="flex-1 min-w-0 overflow-y-auto overflow-x-hidden">

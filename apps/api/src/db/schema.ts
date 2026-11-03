@@ -135,7 +135,7 @@ export const staffAssignments = pgTable(
       .references(() => users.id, { onDelete: 'restrict' }),
     role: text('role')
       .notNull()
-      .$type<'owner' | 'manager' | 'front_desk'>(),
+      .$type<'owner' | 'staff' | 'manager' | 'front_desk'>(),
     branchScope: text('branch_scope')
       .notNull()
       .default('all')

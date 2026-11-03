@@ -18,6 +18,30 @@ export class SchemaGuard implements OnModuleInit {
    */
   async verifySchema() {
     try {
+      // 0. Auto-ensure gym_daily_runs table and payment idempotency columns exist (safe IF NOT EXISTS)
+      try {
+        await this.db.execute(sql`
+          CREATE TABLE IF NOT EXISTS "gym_daily_runs" (
+            "id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+            "gym_id" uuid NOT NULL REFERENCES "gyms"("id") ON DELETE cascade,
+            "local_date" date NOT NULL,
+            "processed_at" timestamp with time zone DEFAULT now() NOT NULL,
+            "freezes_activated" integer DEFAULT 0 NOT NULL,
+            "freezes_completed" integer DEFAULT 0 NOT NULL,
+            "freezes_expired" integer DEFAULT 0 NOT NULL,
+            "status" text DEFAULT 'success' NOT NULL,
+            "error_message" text
+          );
+          CREATE UNIQUE INDEX IF NOT EXISTS "gym_daily_runs_gym_date_uq" ON "gym_daily_runs" ("gym_id", "local_date");
+          CREATE INDEX IF NOT EXISTS "gym_daily_runs_gym_idx" ON "gym_daily_runs" ("gym_id");
+          ALTER TABLE "payments" ADD COLUMN IF NOT EXISTS "idempotency_key" text;
+          ALTER TABLE "payments" ADD COLUMN IF NOT EXISTS "request_hash" text;
+          CREATE UNIQUE INDEX IF NOT EXISTS "payments_idempotency_uq" ON "payments" ("gym_id", "idempotency_key") WHERE "idempotency_key" IS NOT NULL;
+        `);
+      } catch (autoErr: any) {
+        this.logger.warn(`[SchemaGuard] Auto-provisioning gym_daily_runs skipped: ${autoErr?.message}`);
+      }
+
       // 1. Check btree_gist extension
       const extRes = await this.db.execute<{ extname: string }>(
         sql`SELECT extname FROM pg_extension WHERE extname = 'btree_gist';`,

@@ -118,8 +118,26 @@ export function OperationsView() {
 
       if (memRes.status === 'fulfilled' && memRes.value.ok) {
         const data = await memRes.value.json();
-        const list: MemberEntity[] = Array.isArray(data) ? data : data?.data || [];
-        setMembers(list);
+        const rawList = Array.isArray(data)
+          ? data
+          : Array.isArray(data?.items)
+          ? data.items
+          : Array.isArray(data?.data)
+          ? data.data
+          : [];
+
+        const normalizedList: MemberEntity[] = rawList.map((m: any) => ({
+          id: m.id,
+          fullName: m.fullName || m.user?.fullName || 'Club Member',
+          phone: m.phone || m.user?.phone || '—',
+          email: m.email || m.user?.email || null,
+          memberNumber: m.memberNumber || `MEM-${m.id?.slice(0, 8)}`,
+          gender: m.gender || null,
+          status: m.status || 'active',
+          createdAt: m.createdAt,
+        }));
+
+        setMembers(normalizedList);
       } else {
         setMembers([]);
       }

@@ -6,8 +6,15 @@ import { usePlatformAuth } from "./context/PlatformAuthContext";
 import { LoginScreen } from "./components/auth/LoginScreen";
 import { PlatformLoginScreen } from "./components/auth/PlatformLoginScreen";
 import { GymOnboardingModal } from "./components/auth/GymOnboardingModal";
+import { RegisterGymModal } from "./components/onboarding/RegisterGymModal";
+import { EXPLORER_EVENT_OPEN_REGISTER } from "./lib/api-client";
 import { DashboardLayout } from "./components/layout/DashboardLayout";
 import { BentoDashboardView } from "./components/views/BentoDashboardView";
+import { FrontDeskView } from "./components/views/FrontDeskView";
+import { BranchManagementView } from "./components/views/BranchManagementView";
+import { MemberManagementView } from "./components/views/MemberManagementView";
+import { InvoicesView } from "./components/views/InvoicesView";
+import { ShiftsAndInvoicesView } from "./components/views/ShiftsAndInvoicesView";
 import { OperationsView } from "./components/views/OperationsView";
 import { ComplianceView } from "./components/views/ComplianceView";
 import { PlatformDashboardView } from "./components/platform/PlatformDashboardView";
@@ -132,6 +139,31 @@ export default function App() {
     applyThemeToDocument(DEFAULT_THEME);
   }, []);
 
+  // Step 3: Global ActionGuard & Interceptor listener
+  // Whenever any mutating action is triggered in Explorer Mode, auto-open the RegisterGymModal
+  useEffect(() => {
+    const handleOpenRegisterModal = () => {
+      setIsRegisterGymModalOpen(true);
+    };
+
+    window.addEventListener(EXPLORER_EVENT_OPEN_REGISTER, handleOpenRegisterModal);
+    return () => {
+      window.removeEventListener(EXPLORER_EVENT_OPEN_REGISTER, handleOpenRegisterModal);
+    };
+  }, []);
+
+  // Global navigation event listener
+  useEffect(() => {
+    const handleCustomNavigate = (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      if (detail?.nav) {
+        setActiveNav(detail.nav);
+      }
+    };
+    window.addEventListener("gympulse:navigate", handleCustomNavigate);
+    return () => window.removeEventListener("gympulse:navigate", handleCustomNavigate);
+  }, []);
+
   // -------------------------------------------------------------
   // Portal 1: Global Platform Administrator (URL: /platform)
   // -------------------------------------------------------------
@@ -188,19 +220,17 @@ export default function App() {
   return (
     <>
       {/* 
-        Stage 2: Gym Facility Registration Modal
-        Opens when user clicks "Register Your Gym to Unlock" in Stage 1 Explorer Mode.
+        Step 4: RegisterGymModal Slide-Over Drawer
+        Opens when user clicks "Register Your Gym to Unlock" or triggers any mutating action in Explorer Mode.
       */}
-      {isRegisterGymModalOpen && (
-        <GymOnboardingModal
-          canDismiss={true}
-          onClose={() => setIsRegisterGymModalOpen(false)}
-          onSuccess={async () => {
-            setIsRegisterGymModalOpen(false);
-            await fetchGyms();
-          }}
-        />
-      )}
+      <RegisterGymModal
+        isOpen={isRegisterGymModalOpen}
+        onClose={() => setIsRegisterGymModalOpen(false)}
+        onSuccess={async () => {
+          setIsRegisterGymModalOpen(false);
+          await fetchGyms();
+        }}
+      />
 
       <DashboardLayout
         activeNav={activeNav}
@@ -210,7 +240,7 @@ export default function App() {
         {/* Dynamic Domain View Switcher (8 Core Modules) */}
         {activeNav === "overview" && (
           <>
-            <BentoDashboardView />
+            <BentoDashboardView onNavSelect={setActiveNav} />
             {/* Integrated Backend Health Diagnostics Strip */}
             <section className="px-6 pb-12">
               <div className="rounded-2xl bg-surface-container-low border border-outline-variant/30 p-6 shadow-md">
@@ -241,25 +271,31 @@ export default function App() {
         )}
 
         {/* 2. Front Desk (/desk) */}
-        {activeNav === "desk" && <OperationsView />}
+        {activeNav === "desk" && <FrontDeskView />}
+
+        {/* 2b. Branches (/branches) */}
+        {activeNav === "branches" && <BranchManagementView />}
 
         {/* 3. Members (/members) */}
-        {activeNav === "members" && <OperationsView />}
+        {activeNav === "members" && <MemberManagementView />}
 
         {/* 4. Plans & Pricing (/plans) */}
         {activeNav === "plans" && <OperationsView />}
 
         {/* 5. Freezes (/freezes) */}
-        {activeNav === "freezes" && <ComplianceView />}
+        {activeNav === "freezes" && <ComplianceView initialTab="freezes" />}
 
         {/* 6. Shifts & Cash (/shifts) */}
-        {activeNav === "shifts" && <ComplianceView />}
+        {activeNav === "shifts" && <ShiftsAndInvoicesView />}
 
         {/* 7. Invoices (/invoices) */}
-        {activeNav === "invoices" && <ComplianceView />}
+        {activeNav === "invoices" && <InvoicesView />}
 
         {/* 8. Settings & Staff (/settings) */}
-        {activeNav === "settings" && <ComplianceView />}
+        {activeNav === "settings" && <ComplianceView initialTab="settings" />}
+
+        {/* 8b. Subscription & Quotas (/subscription) */}
+        {activeNav === "subscription" && <ComplianceView initialTab="subscription" />}
       </DashboardLayout>
     </>
   );

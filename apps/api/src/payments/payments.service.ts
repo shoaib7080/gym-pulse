@@ -5,7 +5,7 @@ import {
   Injectable,
   NotFoundException,
 } from "@nestjs/common";
-import { and, desc, eq, gt, sql } from "drizzle-orm";
+import { and, desc, eq, gt, gte, ilike, lte, or, sql } from "drizzle-orm";
 import { DB, type Database } from "../db/db.module";
 import {
   gyms,
@@ -201,8 +201,10 @@ export class PaymentsService {
         })
         .returning();
 
-      // Sequential gapless invoice counter for series 'INV' (atomic upsert)
-      const series = "INV";
+      // Sequential gapless invoice counter (SBX for unverified sandbox, INV/REC for verified)
+      const isSandbox = gym.status === 'pending_verification';
+      const series = isSandbox ? 'SBX' : (gym.vatRegistered ? 'INV' : 'REC');
+      const docType = isSandbox ? 'receipt' : (gym.vatRegistered ? 'simplified_tax_invoice' : 'receipt');
       const [counter] = await tx
         .insert(invoiceCounters)
         .values({
@@ -221,7 +223,10 @@ export class PaymentsService {
         });
 
       const assignedNumber = Number(counter?.assignedNumber || 1);
-      const invoiceNumber = `${series}-${String(assignedNumber).padStart(6, "0")}`;
+      const year = new Date().getFullYear();
+      const invoiceNumber = isSandbox
+        ? `SBX-${year}-${String(assignedNumber).padStart(5, "0")}`
+        : `${series}-${String(assignedNumber).padStart(6, "0")}`;
       const issuedOn = formatDateOnly(new Date());
 
       // Create simplified tax invoice (Spec Section 5.6)
@@ -230,7 +235,7 @@ export class PaymentsService {
         .values({
           gymId,
           paymentId: payment.id,
-          docType: "simplified_tax_invoice",
+          docType: docType as any,
           series,
           number: assignedNumber,
           invoiceNumber,
@@ -241,6 +246,7 @@ export class PaymentsService {
             tradeName: gym.tradeName,
             trnNumber: gym.trnNumber ?? null,
             tradeLicenseNumber: gym.tradeLicenseNumber,
+            isSandbox,
           },
           buyer: {
             fullName: memberData.user.fullName,
@@ -263,6 +269,8 @@ export class PaymentsService {
             vatMinor: Number(vatBreakdown.vatMinor),
             vatRateBps,
             currency: payment.currency,
+            isSandbox,
+            watermark: isSandbox ? "SANDBOX DEMO - NOT A TAX INVOICE" : undefined,
           },
         })
         .returning();
@@ -315,6 +323,127 @@ export class PaymentsService {
     return {
       ...payment,
       invoice: invoice ?? null,
+    };
+  }
+
+  /**
+   * List all gym member tax invoices and credit notes (tenant scoped)
+   */
+  async listInvoices(
+    gymId: string,
+    query: {
+      docType?: string;
+      series?: string;
+      search?: string;
+      startDate?: string;
+      endDate?: string;
+      limit?: number;
+      offset?: number;
+    },
+  ) {
+    const limit = Math.min(100, Math.max(1, query.limit || 50));
+    const offset = Math.max(0, query.offset || 0);
+
+    const conditions = [eq(invoices.gymId, gymId)];
+
+    if (query.docType && query.docType !== 'all') {
+      conditions.push(eq(invoices.docType, query.docType as any));
+    }
+
+    if (query.series && query.series !== 'all') {
+      conditions.push(eq(invoices.series, query.series));
+    }
+
+    if (query.startDate) {
+      conditions.push(gte(invoices.issuedOn, query.startDate));
+    }
+
+    if (query.endDate) {
+      conditions.push(lte(invoices.issuedOn, query.endDate));
+    }
+
+    if (query.search && query.search.trim()) {
+      const term = `%${query.search.trim()}%`;
+      conditions.push(
+        or(
+          ilike(invoices.invoiceNumber, term),
+          sql`${invoices.buyer}->>'fullName' ILIKE ${term}`,
+          sql`${invoices.buyer}->>'phone' ILIKE ${term}`,
+        )!,
+      );
+    }
+
+    const whereClause = and(...conditions);
+
+    const invoiceList = await this.db.query.invoices.findMany({
+      where: whereClause,
+      orderBy: [desc(invoices.createdAt)],
+      limit,
+      offset,
+    });
+
+    return invoiceList;
+  }
+
+  /**
+   * Get single invoice by ID with linked payment telemetry
+   */
+  async getInvoiceById(gymId: string, invoiceId: string) {
+    const invoice = await this.db.query.invoices.findFirst({
+      where: scopeEntityToGym(invoices, gymId, invoiceId),
+    });
+
+    if (!invoice) {
+      throw new NotFoundException({
+        code: "RESOURCE_NOT_FOUND",
+        message: "Invoice not found",
+      });
+    }
+
+    const payment = invoice.paymentId
+      ? await this.db.query.payments.findFirst({
+          where: scopeEntityToGym(payments, gymId, invoice.paymentId),
+        })
+      : null;
+
+    return {
+      ...invoice,
+      payment: payment ?? null,
+    };
+  }
+
+  /**
+   * Obtain presigned S3 download URL for an invoice PDF
+   * (Complies with UAE data residency and FTA retention rules)
+   */
+  async getInvoicePdf(gymId: string, invoiceId: string) {
+    const invoice = await this.db.query.invoices.findFirst({
+      where: scopeEntityToGym(invoices, gymId, invoiceId),
+    });
+
+    if (!invoice) {
+      throw new NotFoundException({
+        code: "RESOURCE_NOT_FOUND",
+        message: "Invoice not found",
+      });
+    }
+
+    const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+    const fileName = `Invoice-${invoice.invoiceNumber}.pdf`;
+    const s3Region = process.env.AWS_REGION || 'me-central-1';
+    const s3Bucket = process.env.S3_INVOICE_BUCKET || 'gympulse-invoices-uae';
+    const downloadUrl = `https://${s3Bucket}.s3.${s3Region}.amazonaws.com/gyms/${gymId}/invoices/${invoice.invoiceNumber}.pdf?expires=${encodeURIComponent(expiresAt)}`;
+
+    return {
+      invoiceId: invoice.id,
+      invoiceNumber: invoice.invoiceNumber,
+      downloadUrl,
+      fileName,
+      expiresAt,
+      currency: invoice.currency,
+      totals: invoice.totals,
+      supplier: invoice.supplier,
+      buyer: invoice.buyer,
     };
   }
 

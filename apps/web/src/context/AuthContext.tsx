@@ -1,4 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from 'react';
+import { interceptExplorerRequest } from '../lib/api-client';
 
 export interface AuthUser {
   id: string;
@@ -46,6 +47,7 @@ export interface CreateGymPayload {
   trnNumber?: string | null;
   currency?: string;
   timezone?: string;
+  settings?: Record<string, unknown>;
 }
 
 interface AuthContextType {
@@ -119,6 +121,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // Authenticated fetch helper respecting multi-tenant headers, CSRF origins, and cookies
   const apiFetch = useCallback(
     async (path: string, options: RequestInit = {}): Promise<Response> => {
+      // Step 2: Zero-latency Explorer Preview Mode Interceptor (Pattern 2)
+      // When unonboarded (activeGymId === null), resolve immediately from UAE mock fixtures or short-circuit mutating actions
+      if (!activeGymId) {
+        const mockRes = interceptExplorerRequest(path, options);
+        if (mockRes) {
+          return Promise.resolve(mockRes);
+        }
+      }
+
       const headers = new Headers(options.headers || {});
 
       // Add JSON content-type if sending body and not already specified
@@ -189,9 +200,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
         // Auto-select gym if none currently selected or if previously selected is invalid
         if (gyms.length > 0) {
-          const validSelected = gyms.find((g) => g.gymId === activeGymId);
+          const validSelected = gyms.find((g) => (g.gymId || g.gym?.id) === activeGymId);
           if (!validSelected) {
-            const defaultGymId = gyms[0].gymId;
+            const defaultGymId = gyms[0].gymId || gyms[0].gym?.id;
             setActiveGymIdState(defaultGymId);
             localStorage.setItem(ACTIVE_GYM_KEY, defaultGymId);
           }
@@ -241,9 +252,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
                   setUserGyms(gymsList);
                   localStorage.setItem(USER_GYMS_KEY, JSON.stringify(gymsList));
                   if (gymsList.length > 0) {
-                    const validSelected = gymsList.find((g) => g.gymId === activeGymId);
+                    const validSelected = gymsList.find((g) => (g.gymId || g.gym?.id) === activeGymId);
                     if (!validSelected) {
-                      const firstGymId = gymsList[0].gymId;
+                      const firstGymId = gymsList[0].gymId || gymsList[0].gym?.id;
                       setActiveGymIdState(firstGymId);
                       localStorage.setItem(ACTIVE_GYM_KEY, firstGymId);
                     }
@@ -494,7 +505,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   // Determine current active gym object & role assignment from userGyms
-  const activeAssignment = userGyms.find((g) => g.gymId === activeGymId) || null;
+  const activeAssignment = userGyms.find((g) => (g.gymId || g.gym?.id) === activeGymId) || null;
   const activeGym = activeAssignment?.gym || null;
   const userRole = activeAssignment?.role || null;
   const branchScope = activeAssignment?.branchScope || null;

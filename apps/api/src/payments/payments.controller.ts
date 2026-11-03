@@ -4,12 +4,14 @@ import {
   Get,
   Param,
   Post,
+  Query,
   UseGuards,
 } from '@nestjs/common';
 import { AuthGuard } from '../common/guards/auth.guard';
 import { TenantGuard } from '../common/guards/tenant.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
 import { Roles } from '../common/decorators/roles.decorator';
+import { AllowInactiveGym } from '../common/decorators/allow-inactive-gym.decorator';
 import { CurrentTenant, type TenantContext } from '../common/decorators/current-tenant.decorator';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { PaymentsService } from './payments.service';
@@ -36,9 +38,31 @@ export class PaymentsController {
   }
 
   /**
+   * List member tax invoices and receipts
+   */
+  @Get('invoices')
+  @AllowInactiveGym()
+  @Roles('owner', 'manager', 'front_desk')
+  async listInvoices(
+    @CurrentTenant() tenant: TenantContext,
+    @Query('docType') docType?: string,
+    @Query('search') search?: string,
+    @Query('limit') limit?: string,
+    @Query('offset') offset?: string,
+  ) {
+    return this.paymentsService.listInvoices(tenant.gymId, {
+      docType,
+      search,
+      limit: limit ? parseInt(limit, 10) : undefined,
+      offset: offset ? parseInt(offset, 10) : undefined,
+    });
+  }
+
+  /**
    * Get payment details and attached invoice
    */
   @Get(':id')
+  @AllowInactiveGym()
   @Roles('owner', 'manager', 'front_desk')
   async getPaymentById(
     @CurrentTenant() tenant: TenantContext,

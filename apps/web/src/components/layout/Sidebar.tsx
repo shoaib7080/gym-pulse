@@ -10,6 +10,7 @@ import {
   Settings,
   ChevronLeft,
   PulseLogo,
+  Building2,
 } from "../ui/icons";
 
 export interface NavItem {
@@ -22,19 +23,21 @@ export interface NavItem {
 }
 
 /**
- * 8 Exact Domain Navigation Modules per Section 9.1 Specification:
+ * Domain Navigation Modules:
  * 1. Overview (/dashboard)
  * 2. Front Desk (/desk)
- * 3. Members (/members)
- * 4. Plans & Pricing (/plans)
- * 5. Freezes (/freezes)
- * 6. Shifts & Cash (/shifts)
- * 7. Invoices (/invoices)
- * 8. Settings & Staff (/settings)
+ * 3. Branches (/branches)
+ * 4. Members (/members)
+ * 5. Plans & Pricing (/plans)
+ * 6. Freezes (/freezes)
+ * 7. Shifts & Cash (/shifts)
+ * 8. Invoices (/invoices)
+ * 9. Settings & Staff (/settings)
  */
 const DOMAIN_MODULES: NavItem[] = [
   { id: "overview", name: "Overview", path: "/dashboard", icon: LayoutDashboard },
   { id: "desk", name: "Front Desk", path: "/desk", icon: Activity },
+  { id: "branches", name: "Branches", path: "/branches", icon: Building2 },
   { id: "members", name: "Members", path: "/members", icon: Users },
   { id: "plans", name: "Plans & Pricing", path: "/plans", icon: Dumbbell },
   {

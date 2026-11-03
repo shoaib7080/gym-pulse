@@ -4,6 +4,7 @@ import {
   Get,
   NotFoundException,
   Param,
+  Patch,
   Post,
   UseGuards,
 } from '@nestjs/common';
@@ -15,6 +16,7 @@ import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { CurrentTenant, type TenantContext } from '../common/decorators/current-tenant.decorator';
 import { BranchesService } from './branches.service';
 
+import { AllowInactiveGym } from '../common/decorators/allow-inactive-gym.decorator';
 import { ActiveGymGuard } from '../common/guards/active-gym.guard';
 
 @Controller('branches')
@@ -26,6 +28,7 @@ export class BranchesController {
    * List all branches for the active gym
    */
   @Get()
+  @AllowInactiveGym()
   async getBranches(@CurrentTenant() tenant: TenantContext) {
     return this.branchesService.getGymBranches(tenant.gymId);
   }
@@ -34,6 +37,7 @@ export class BranchesController {
    * Get single branch details
    */
   @Get(':id')
+  @AllowInactiveGym()
   async getBranch(
     @CurrentTenant() tenant: TenantContext,
     @Param('id') branchId: string,
@@ -60,5 +64,20 @@ export class BranchesController {
     @Body() body: unknown,
   ) {
     return this.branchesService.createBranch(tenant.gymId, body, user?.id);
+  }
+
+  /**
+   * Update an existing branch (Owner or Manager only)
+   */
+  @Patch(':id')
+  @UseGuards(RolesGuard, ActiveGymGuard)
+  @Roles('owner', 'manager')
+  async updateBranch(
+    @CurrentTenant() tenant: TenantContext,
+    @CurrentUser() user: { id: string },
+    @Param('id') branchId: string,
+    @Body() body: unknown,
+  ) {
+    return this.branchesService.updateBranch(tenant.gymId, branchId, body, user?.id);
   }
 }

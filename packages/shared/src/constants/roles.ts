@@ -1,6 +1,7 @@
 export const ROLES = {
   PLATFORM_ADMIN: 'platform_admin',
   OWNER: 'owner',
+  STAFF: 'staff',
   MANAGER: 'manager',
   FRONT_DESK: 'front_desk',
   MEMBER: 'member',
@@ -8,7 +9,7 @@ export const ROLES = {
 
 export type UserRole = (typeof ROLES)[keyof typeof ROLES];
 
-export const STAFF_ROLES = [ROLES.OWNER, ROLES.MANAGER, ROLES.FRONT_DESK] as const;
+export const STAFF_ROLES = [ROLES.OWNER, ROLES.STAFF, ROLES.MANAGER, ROLES.FRONT_DESK] as const;
 export type StaffRole = (typeof STAFF_ROLES)[number];
 
 export const BRANCH_SCOPES = {

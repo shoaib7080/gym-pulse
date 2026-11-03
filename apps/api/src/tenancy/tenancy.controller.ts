@@ -158,6 +158,35 @@ export class TenancyController {
   }
 
   /**
+   * Route 5b: Toggle staff active / disabled status (Owner only)
+   */
+  @Patch('staff/:id/status')
+  @UseGuards(AuthGuard, TenantGuard, RolesGuard)
+  @Roles('owner')
+  async updateStaffStatus(
+    @CurrentUser() user: { id: string },
+    @CurrentTenant() tenant: TenantContext,
+    @Param('id') id: string,
+    @Body() body: { isActive: boolean },
+  ) {
+    return this.tenancyService.updateStaffStatus(tenant.gymId, id, body.isActive, user.id);
+  }
+
+  /**
+   * Route 5c: Reset staff password via email (Owner only)
+   */
+  @Post('staff/:id/reset-password')
+  @UseGuards(AuthGuard, TenantGuard, RolesGuard)
+  @Roles('owner')
+  async resetStaffPassword(
+    @CurrentUser() user: { id: string },
+    @CurrentTenant() tenant: TenantContext,
+    @Param('id') id: string,
+  ) {
+    return this.tenancyService.resetStaffPassword(tenant.gymId, id, user.id);
+  }
+
+  /**
    * Route 6: Get gym provider payment accounts
    * Available to Owner and Manager. Secrets are never returned.
    */

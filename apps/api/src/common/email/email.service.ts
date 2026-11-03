@@ -183,4 +183,33 @@ export class EmailService {
     `;
     return this.sendMail({ to: params.to, subject, html });
   }
+
+  /**
+   * Send staff invitation email with single-use setup link
+   */
+  async sendStaffInvitationEmail(params: {
+    to: string;
+    name: string;
+    gymName: string;
+    role: string;
+    setupUrl?: string;
+  }) {
+    const subject = `You've been invited to join ${params.gymName} on GymPulse`;
+    const url = params.setupUrl || `https://app.gympulse.io/#/auth/setup?email=${encodeURIComponent(params.to)}`;
+    const html = `
+      <div style="font-family: sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #e2e8f0; border-radius: 8px;">
+        <h2 style="color: #1a202c; margin-top: 0;">Welcome to ${params.gymName}</h2>
+        <p>Hi ${params.name},</p>
+        <p>You have been invited to join the staff team at <strong>${params.gymName}</strong> on the GymPulse platform as <strong>${params.role.replace('_', ' ').toUpperCase()}</strong>.</p>
+        <p>To set your password and access your branch front-desk dashboard, click the button below:</p>
+        <p style="text-align: center; margin: 30px 0;">
+          <a href="${url}" style="background: #D4FF00; color: #000; font-weight: bold; padding: 12px 24px; text-decoration: none; border-radius: 6px; display: inline-block;">Accept Invitation & Set Password</a>
+        </p>
+        <p style="color: #718096; font-size: 13px;">If you have any questions, reach out to your gym management.</p>
+        <hr style="border: 0; border-top: 1px solid #e2e8f0; margin: 20px 0;" />
+        <p style="color: #a0aec0; font-size: 12px; margin: 0;">GymPulse — Enterprise Gym Operating System</p>
+      </div>
+    `;
+    return this.sendMail({ to: params.to, subject, html });
+  }
 }

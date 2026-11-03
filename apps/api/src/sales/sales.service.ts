@@ -6,10 +6,10 @@ import {
   Injectable,
   Logger,
   NotFoundException,
-} from '@nestjs/common';
-import { createHash } from 'node:crypto';
-import { and, eq, gt, isNull, sql } from 'drizzle-orm';
-import { DB, type Database } from '../db/db.module';
+} from "@nestjs/common";
+import { createHash } from "node:crypto";
+import { and, eq, gt, isNull, sql } from "drizzle-orm";
+import { DB, type Database } from "../db/db.module";
 import {
   branches,
   gyms,
@@ -22,7 +22,7 @@ import {
   plans,
   shifts,
   users,
-} from '../db/schema';
+} from "../db/schema";
 import {
   addDays,
   computeInclusiveEndDate,
@@ -32,11 +32,14 @@ import {
   createRenewalSaleSchema,
   type CreateSaleMembershipInput,
   type CreateRenewalSaleInput,
-} from '@gympulse/shared';
-import { AuditService } from '../common/audit/audit.service';
-import { scopeEntityToGym, scopeToGym } from '../common/tenant/tenant-scope.helper';
-import { getGymLocalDate } from '../common/utils/dates';
-import { SubscriptionsService } from '../subscriptions/subscriptions.service';
+} from "@gympulse/shared";
+import { AuditService } from "../common/audit/audit.service";
+import {
+  scopeEntityToGym,
+  scopeToGym,
+} from "../common/tenant/tenant-scope.helper";
+import { getGymLocalDate } from "../common/utils/dates";
+import { SubscriptionsService } from "../subscriptions/subscriptions.service";
 
 @Injectable()
 export class SalesService {
@@ -66,10 +69,14 @@ export class SalesService {
     actorRole?: string,
     idempotencyKey?: string,
   ) {
-    if (!idempotencyKey || typeof idempotencyKey !== 'string' || idempotencyKey.trim().length === 0) {
+    if (
+      !idempotencyKey ||
+      typeof idempotencyKey !== "string" ||
+      idempotencyKey.trim().length === 0
+    ) {
       throw new BadRequestException({
-        code: 'IDEMPOTENCY_KEY_REQUIRED',
-        message: 'The Idempotency-Key header is required for membership sales',
+        code: "IDEMPOTENCY_KEY_REQUIRED",
+        message: "The Idempotency-Key header is required for membership sales",
       });
     }
 
@@ -78,19 +85,19 @@ export class SalesService {
     const parseResult = createSaleMembershipSchema.safeParse(rawInput);
     if (!parseResult.success) {
       throw new BadRequestException({
-        code: 'VALIDATION_FAILED',
-        message: 'Invalid membership sale data',
+        code: "VALIDATION_FAILED",
+        message: "Invalid membership sale data",
         invalidParams: parseResult.error.issues.map((i) => ({
-          name: i.path.join('.'),
+          name: i.path.join("."),
           reason: i.message,
         })),
       });
     }
 
     const input: CreateSaleMembershipInput = parseResult.data;
-    const requestHash = createHash('sha256')
+    const requestHash = createHash("sha256")
       .update(JSON.stringify(input))
-      .digest('hex');
+      .digest("hex");
 
     // 1. Check Idempotency Key
     const existingPayment = await this.db.query.payments.findFirst({
@@ -111,7 +118,11 @@ export class SalesService {
         });
         const membership = existingPayment.membershipId
           ? await this.db.query.memberships.findFirst({
-              where: scopeEntityToGym(memberships, gymId, existingPayment.membershipId),
+              where: scopeEntityToGym(
+                memberships,
+                gymId,
+                existingPayment.membershipId,
+              ),
             })
           : null;
 
@@ -123,8 +134,9 @@ export class SalesService {
         };
       } else {
         throw new ConflictException({
-          code: 'IDEMPOTENCY_CONFLICT',
-          message: 'Idempotency key has already been used with different request parameters',
+          code: "IDEMPOTENCY_CONFLICT",
+          message:
+            "Idempotency key has already been used with different request parameters",
         });
       }
     }
@@ -137,13 +149,13 @@ export class SalesService {
     });
     if (!gym) {
       throw new NotFoundException({
-        code: 'RESOURCE_NOT_FOUND',
-        message: 'Gym not found',
+        code: "RESOURCE_NOT_FOUND",
+        message: "Gym not found",
       });
     }
-    if (gym.status === 'suspended' || gym.status === 'closed') {
+    if (gym.status === "suspended" || gym.status === "closed") {
       throw new ForbiddenException({
-        code: 'GYM_STATUS_RESTRICTED',
+        code: "GYM_STATUS_RESTRICTED",
         message: `Cannot process sales: gym is currently ${gym.status}`,
       });
     }
@@ -154,8 +166,8 @@ export class SalesService {
     });
     if (!plan || !plan.isActive) {
       throw new NotFoundException({
-        code: 'PLAN_NOT_FOUND',
-        message: 'Plan not found or inactive',
+        code: "PLAN_NOT_FOUND",
+        message: "Plan not found or inactive",
       });
     }
 
@@ -163,22 +175,22 @@ export class SalesService {
     const currency = gym.currency;
 
     // 4. Start & End Date Calculations
-    const gymTimezone = gym.timezone || 'Asia/Dubai';
+    const gymTimezone = gym.timezone || "Asia/Dubai";
     const today = getGymLocalDate(gymTimezone);
     const startDate = input.startDate || today;
 
     if (startDate < today) {
       throw new BadRequestException({
-        code: 'START_DATE_IN_PAST',
-        message: 'Membership start date cannot be in the past',
+        code: "START_DATE_IN_PAST",
+        message: "Membership start date cannot be in the past",
       });
     }
 
     const maxAllowedStartDate = addDays(today, 60);
     if (startDate > maxAllowedStartDate) {
       throw new BadRequestException({
-        code: 'START_DATE_TOO_FAR',
-        message: 'Membership start date cannot exceed 60 days in advance',
+        code: "START_DATE_TOO_FAR",
+        message: "Membership start date cannot exceed 60 days in advance",
       });
     }
 
@@ -191,19 +203,20 @@ export class SalesService {
     // 5. Discount Validation
     let discountAmountMinor = 0;
     if (input.discount) {
-      if (actorRole !== 'owner' && actorRole !== 'manager') {
+      if (actorRole !== "owner" && actorRole !== "manager") {
         throw new ForbiddenException({
-          code: 'DISCOUNT_UNAUTHORIZED',
-          message: 'Only gym owners and managers are authorized to apply discounts',
+          code: "DISCOUNT_UNAUTHORIZED",
+          message:
+            "Only gym owners and managers are authorized to apply discounts",
         });
       }
 
-      if (input.discount.type === 'percent') {
+      if (input.discount.type === "percent") {
         const pct = input.discount.value;
         if (pct <= 0 || pct >= 100) {
           throw new BadRequestException({
-            code: 'INVALID_DISCOUNT',
-            message: 'Percentage discount must be between 1 and 99',
+            code: "INVALID_DISCOUNT",
+            message: "Percentage discount must be between 1 and 99",
           });
         }
         discountAmountMinor = Math.round((basePriceMinor * pct) / 100);
@@ -211,8 +224,9 @@ export class SalesService {
         const amt = Math.round(input.discount.value);
         if (amt <= 0 || amt >= basePriceMinor) {
           throw new BadRequestException({
-            code: 'INVALID_DISCOUNT',
-            message: 'Discount amount must be positive and less than the plan price',
+            code: "INVALID_DISCOUNT",
+            message:
+              "Discount amount must be positive and less than the plan price",
           });
         }
         discountAmountMinor = amt;
@@ -222,18 +236,19 @@ export class SalesService {
     const finalTotalMinor = basePriceMinor - discountAmountMinor;
     if (finalTotalMinor <= 0) {
       throw new BadRequestException({
-        code: 'INVALID_DISCOUNT',
-        message: 'Discount cannot reduce price to zero. Zero-cost memberships must use the complimentary flow.',
+        code: "INVALID_DISCOUNT",
+        message:
+          "Discount cannot reduce price to zero. Zero-cost memberships must use the complimentary flow.",
       });
     }
 
     // 6. Cashier Shift Resolution (Cash & POS Card)
     let shiftId: string | null = null;
-    if (input.method === 'cash' || input.method === 'card_pos') {
+    if (input.method === "cash" || input.method === "card_pos") {
       if (!actorUserId) {
         throw new BadRequestException({
-          code: 'SHIFT_NOT_OPEN',
-          message: 'A cashier user context is required for desk payments',
+          code: "SHIFT_NOT_OPEN",
+          message: "A cashier user context is required for desk payments",
         });
       }
 
@@ -242,15 +257,16 @@ export class SalesService {
           eq(shifts.gymId, gymId),
           eq(shifts.openedBy, actorUserId),
           eq(shifts.branchId, input.branchId),
-          eq(shifts.status, 'open'),
+          eq(shifts.status, "open"),
           isNull(shifts.closedAt),
         ),
       });
 
       if (!openShift) {
         throw new BadRequestException({
-          code: 'SHIFT_NOT_OPEN',
-          message: 'An active, open cashier shift operated by you at this branch is required for desk payments',
+          code: "SHIFT_NOT_OPEN",
+          message:
+            "An active, open cashier shift operated by you at this branch is required for desk payments",
         });
       }
 
@@ -277,15 +293,18 @@ export class SalesService {
 
     if (member.length === 0) {
       throw new NotFoundException({
-        code: 'RESOURCE_NOT_FOUND',
-        message: 'Member not found',
+        code: "RESOURCE_NOT_FOUND",
+        message: "Member not found",
       });
     }
     const memberData = member[0];
 
     // 8. VAT Integer Math
     const vatRateBps = gym.vatRegistered ? 500 : 0;
-    const vatBreakdown = calculateVatInclusive(BigInt(finalTotalMinor), vatRateBps);
+    const vatBreakdown = calculateVatInclusive(
+      BigInt(finalTotalMinor),
+      vatRateBps,
+    );
 
     // 9. Atomic Transaction
     return await this.db.transaction(async (tx) => {
@@ -312,7 +331,7 @@ export class SalesService {
           originalEndDate: endDate,
           endDate,
           planSnapshot,
-          status: 'pending_payment',
+          status: "pending_payment",
           version: 1,
         })
         .returning();
@@ -326,9 +345,9 @@ export class SalesService {
           memberId: input.memberId,
           membershipId: newMembership.id,
           shiftId,
-          purpose: 'membership',
+          purpose: "membership",
           method: input.method,
-          status: 'succeeded',
+          status: "succeeded",
           currency,
           totalMinor: finalTotalMinor,
           baseMinor: Number(vatBreakdown.baseMinor),
@@ -336,15 +355,20 @@ export class SalesService {
           vatRateBps,
           idempotencyKey: trimmedKey,
           requestHash,
-          provider: input.method === 'cash' ? 'cash' : 'card_pos',
+          provider: input.method === "cash" ? "cash" : "card_pos",
           settledAt: new Date(),
           recordedBy: actorUserId ?? null,
         })
         .returning();
 
-      // Step C: Sequential Gapless Invoice / Receipt
-      const docType = gym.vatRegistered ? 'tax_invoice' : 'receipt';
-      const series = gym.vatRegistered ? 'INV' : 'REC';
+      // Step C: Sequential Gapless Invoice / Receipt (SBX for unverified sandbox gyms)
+      const isSandbox = gym.status === "pending_verification";
+      const docType = isSandbox
+        ? "receipt"
+        : gym.vatRegistered
+          ? "tax_invoice"
+          : "receipt";
+      const series = isSandbox ? "SBX" : gym.vatRegistered ? "INV" : "REC";
 
       const [counter] = await tx
         .insert(invoiceCounters)
@@ -364,25 +388,38 @@ export class SalesService {
         });
 
       const assignedNumber = Number(counter?.assignedNumber || 1);
-      const invoiceNumber = `${series}-${String(assignedNumber).padStart(6, '0')}`;
+      const year = new Date().getFullYear();
+      const invoiceNumber = isSandbox
+        ? `SBX-${year}-${String(assignedNumber).padStart(5, "0")}`
+        : `${series}-${String(assignedNumber).padStart(6, "0")}`;
       const issuedOn = today;
 
       const invoiceLines = [
         {
           description: `${plan.title} (${plan.durationValue} ${plan.durationUnit}s)`,
           totalMinor: basePriceMinor,
-          baseMinor: Number(calculateVatInclusive(BigInt(basePriceMinor), vatRateBps).baseMinor),
-          vatMinor: Number(calculateVatInclusive(BigInt(basePriceMinor), vatRateBps).vatMinor),
+          baseMinor: Number(
+            calculateVatInclusive(BigInt(basePriceMinor), vatRateBps).baseMinor,
+          ),
+          vatMinor: Number(
+            calculateVatInclusive(BigInt(basePriceMinor), vatRateBps).vatMinor,
+          ),
           vatRateBps,
         },
       ];
 
       if (discountAmountMinor > 0) {
         invoiceLines.push({
-          description: `Discount: ${input.discount?.reasonCode || 'Discretionary discount'}`,
+          description: `Discount: ${input.discount?.reasonCode || "Discretionary discount"}`,
           totalMinor: -discountAmountMinor,
-          baseMinor: -Number(calculateVatInclusive(BigInt(discountAmountMinor), vatRateBps).baseMinor),
-          vatMinor: -Number(calculateVatInclusive(BigInt(discountAmountMinor), vatRateBps).vatMinor),
+          baseMinor: -Number(
+            calculateVatInclusive(BigInt(discountAmountMinor), vatRateBps)
+              .baseMinor,
+          ),
+          vatMinor: -Number(
+            calculateVatInclusive(BigInt(discountAmountMinor), vatRateBps)
+              .vatMinor,
+          ),
           vatRateBps,
         });
       }
@@ -392,7 +429,7 @@ export class SalesService {
         .values({
           gymId,
           paymentId: payment.id,
-          docType,
+          docType: docType as any,
           series,
           number: assignedNumber,
           invoiceNumber,
@@ -403,6 +440,7 @@ export class SalesService {
             tradeName: gym.tradeName,
             trnNumber: gym.trnNumber ?? null,
             tradeLicenseNumber: gym.tradeLicenseNumber,
+            isSandbox,
           },
           buyer: {
             fullName: memberData.user.fullName,
@@ -417,6 +455,10 @@ export class SalesService {
             vatMinor: Number(vatBreakdown.vatMinor),
             vatRateBps,
             currency,
+            isSandbox,
+            watermark: isSandbox
+              ? "SANDBOX DEMO - NOT A TAX INVOICE"
+              : undefined,
           },
         })
         .returning();
@@ -425,7 +467,7 @@ export class SalesService {
       const [activeMembership] = await tx
         .update(memberships)
         .set({
-          status: 'active',
+          status: "active",
           updatedAt: new Date(),
         })
         .where(scopeEntityToGym(memberships, gymId, newMembership.id))
@@ -435,7 +477,7 @@ export class SalesService {
       await tx.insert(membershipAdjustments).values({
         gymId,
         membershipId: activeMembership.id,
-        kind: 'purchase',
+        kind: "purchase",
         previousEndDate: startDate,
         newEndDate: endDate,
         paymentId: payment.id,
@@ -444,7 +486,7 @@ export class SalesService {
       });
 
       // Step F: Increment cashier shift cash float if paid by cash
-      if (input.method === 'cash' && shiftId) {
+      if (input.method === "cash" && shiftId) {
         await tx
           .update(shifts)
           .set({
@@ -459,8 +501,8 @@ export class SalesService {
           gymId,
           actorUserId: actorUserId ?? null,
           actorRole,
-          action: 'sale.membership',
-          entityType: 'membership',
+          action: "sale.membership",
+          entityType: "membership",
           entityId: activeMembership.id,
           payload: {
             planId: plan.id,
@@ -500,10 +542,15 @@ export class SalesService {
     actorRole?: string,
     idempotencyKey?: string,
   ) {
-    if (!idempotencyKey || typeof idempotencyKey !== 'string' || idempotencyKey.trim().length === 0) {
+    if (
+      !idempotencyKey ||
+      typeof idempotencyKey !== "string" ||
+      idempotencyKey.trim().length === 0
+    ) {
       throw new BadRequestException({
-        code: 'IDEMPOTENCY_KEY_REQUIRED',
-        message: 'The Idempotency-Key header is required for membership renewals',
+        code: "IDEMPOTENCY_KEY_REQUIRED",
+        message:
+          "The Idempotency-Key header is required for membership renewals",
       });
     }
 
@@ -512,19 +559,19 @@ export class SalesService {
     const parseResult = createRenewalSaleSchema.safeParse(rawInput);
     if (!parseResult.success) {
       throw new BadRequestException({
-        code: 'VALIDATION_FAILED',
-        message: 'Invalid membership renewal data',
+        code: "VALIDATION_FAILED",
+        message: "Invalid membership renewal data",
         invalidParams: parseResult.error.issues.map((i) => ({
-          name: i.path.join('.'),
+          name: i.path.join("."),
           reason: i.message,
         })),
       });
     }
 
     const input: CreateRenewalSaleInput = parseResult.data;
-    const requestHash = createHash('sha256')
+    const requestHash = createHash("sha256")
       .update(JSON.stringify(input))
-      .digest('hex');
+      .digest("hex");
 
     // 1. Idempotency Check
     const existingPayment = await this.db.query.payments.findFirst({
@@ -544,7 +591,11 @@ export class SalesService {
         });
         const membership = existingPayment.membershipId
           ? await this.db.query.memberships.findFirst({
-              where: scopeEntityToGym(memberships, gymId, existingPayment.membershipId),
+              where: scopeEntityToGym(
+                memberships,
+                gymId,
+                existingPayment.membershipId,
+              ),
             })
           : null;
 
@@ -556,8 +607,9 @@ export class SalesService {
         };
       } else {
         throw new ConflictException({
-          code: 'IDEMPOTENCY_CONFLICT',
-          message: 'Idempotency key has already been used with different request parameters',
+          code: "IDEMPOTENCY_CONFLICT",
+          message:
+            "Idempotency key has already been used with different request parameters",
         });
       }
     }
@@ -570,13 +622,13 @@ export class SalesService {
     });
     if (!gym) {
       throw new NotFoundException({
-        code: 'RESOURCE_NOT_FOUND',
-        message: 'Gym not found',
+        code: "RESOURCE_NOT_FOUND",
+        message: "Gym not found",
       });
     }
-    if (gym.status === 'suspended' || gym.status === 'closed') {
+    if (gym.status === "suspended" || gym.status === "closed") {
       throw new ForbiddenException({
-        code: 'GYM_STATUS_RESTRICTED',
+        code: "GYM_STATUS_RESTRICTED",
         message: `Cannot process renewal: gym is currently ${gym.status}`,
       });
     }
@@ -604,22 +656,23 @@ export class SalesService {
       const memRow = memRows.rows?.[0] ?? (memRows as any)?.[0];
       if (!memRow) {
         throw new NotFoundException({
-          code: 'RESOURCE_NOT_FOUND',
-          message: 'Membership not found',
+          code: "RESOURCE_NOT_FOUND",
+          message: "Membership not found",
         });
       }
 
-      if (memRow.status === 'cancelled') {
+      if (memRow.status === "cancelled") {
         throw new BadRequestException({
-          code: 'MEMBERSHIP_CANCELLED',
-          message: 'Cancelled memberships cannot be renewed',
+          code: "MEMBERSHIP_CANCELLED",
+          message: "Cancelled memberships cannot be renewed",
         });
       }
 
       if (memRow.cancel_effective_date) {
         throw new BadRequestException({
-          code: 'MEMBERSHIP_CANCEL_PENDING',
-          message: 'Memberships with a pending cancellation notice cannot be renewed',
+          code: "MEMBERSHIP_CANCEL_PENDING",
+          message:
+            "Memberships with a pending cancellation notice cannot be renewed",
         });
       }
 
@@ -629,8 +682,8 @@ export class SalesService {
       });
       if (!plan || !plan.isActive) {
         throw new NotFoundException({
-          code: 'PLAN_NOT_FOUND',
-          message: 'Plan not found or inactive',
+          code: "PLAN_NOT_FOUND",
+          message: "Plan not found or inactive",
         });
       }
 
@@ -640,19 +693,20 @@ export class SalesService {
       // Step B: Discounts
       let discountAmountMinor = 0;
       if (input.discount) {
-        if (actorRole !== 'owner' && actorRole !== 'manager') {
+        if (actorRole !== "owner" && actorRole !== "manager") {
           throw new ForbiddenException({
-            code: 'DISCOUNT_UNAUTHORIZED',
-            message: 'Only gym owners and managers are authorized to apply discounts',
+            code: "DISCOUNT_UNAUTHORIZED",
+            message:
+              "Only gym owners and managers are authorized to apply discounts",
           });
         }
 
-        if (input.discount.type === 'percent') {
+        if (input.discount.type === "percent") {
           const pct = input.discount.value;
           if (pct <= 0 || pct >= 100) {
             throw new BadRequestException({
-              code: 'INVALID_DISCOUNT',
-              message: 'Percentage discount must be between 1 and 99',
+              code: "INVALID_DISCOUNT",
+              message: "Percentage discount must be between 1 and 99",
             });
           }
           discountAmountMinor = Math.round((basePriceMinor * pct) / 100);
@@ -660,8 +714,9 @@ export class SalesService {
           const amt = Math.round(input.discount.value);
           if (amt <= 0 || amt >= basePriceMinor) {
             throw new BadRequestException({
-              code: 'INVALID_DISCOUNT',
-              message: 'Discount amount must be positive and less than the plan price',
+              code: "INVALID_DISCOUNT",
+              message:
+                "Discount amount must be positive and less than the plan price",
             });
           }
           discountAmountMinor = amt;
@@ -671,19 +726,21 @@ export class SalesService {
       const finalTotalMinor = basePriceMinor - discountAmountMinor;
       if (finalTotalMinor <= 0) {
         throw new BadRequestException({
-          code: 'INVALID_DISCOUNT',
-          message: 'Discount cannot reduce price to zero. Zero-cost renewals must use complimentary adjustments.',
+          code: "INVALID_DISCOUNT",
+          message:
+            "Discount cannot reduce price to zero. Zero-cost renewals must use complimentary adjustments.",
         });
       }
 
       // Step C: Shift Check
       let shiftId: string | null = null;
       const branchId = input.branchId || memRow.branch_id;
-      if (input.method === 'cash' || input.method === 'card_pos') {
+      if (input.method === "cash" || input.method === "card_pos") {
         if (!actorUserId || !branchId) {
           throw new BadRequestException({
-            code: 'SHIFT_NOT_OPEN',
-            message: 'A cashier user context and branch are required for desk payments',
+            code: "SHIFT_NOT_OPEN",
+            message:
+              "A cashier user context and branch are required for desk payments",
           });
         }
 
@@ -692,22 +749,23 @@ export class SalesService {
             eq(shifts.gymId, gymId),
             eq(shifts.openedBy, actorUserId),
             eq(shifts.branchId, branchId),
-            eq(shifts.status, 'open'),
+            eq(shifts.status, "open"),
             isNull(shifts.closedAt),
           ),
         });
 
         if (!openShift) {
           throw new BadRequestException({
-            code: 'SHIFT_NOT_OPEN',
-            message: 'An active, open cashier shift operated by you at this branch is required for desk payments',
+            code: "SHIFT_NOT_OPEN",
+            message:
+              "An active, open cashier shift operated by you at this branch is required for desk payments",
           });
         }
         shiftId = openShift.id;
       }
 
       // Step D: Renewal Date Continuity & Month Clamping
-      const gymTimezone = gym.timezone || 'Asia/Dubai';
+      const gymTimezone = gym.timezone || "Asia/Dubai";
       const today = getGymLocalDate(gymTimezone);
       const currentEndDate = memRow.end_date;
 
@@ -747,7 +805,10 @@ export class SalesService {
 
       // Step F: VAT Calculation
       const vatRateBps = gym.vatRegistered ? 500 : 0;
-      const vatBreakdown = calculateVatInclusive(BigInt(finalTotalMinor), vatRateBps);
+      const vatBreakdown = calculateVatInclusive(
+        BigInt(finalTotalMinor),
+        vatRateBps,
+      );
 
       // Step G: Insert payment row
       const [payment] = await tx
@@ -758,9 +819,9 @@ export class SalesService {
           memberId: memRow.member_id,
           membershipId: memRow.id,
           shiftId,
-          purpose: 'renewal',
+          purpose: "renewal",
           method: input.method,
-          status: 'succeeded',
+          status: "succeeded",
           currency,
           totalMinor: finalTotalMinor,
           baseMinor: Number(vatBreakdown.baseMinor),
@@ -768,15 +829,20 @@ export class SalesService {
           vatRateBps,
           idempotencyKey: trimmedKey,
           requestHash,
-          provider: input.method === 'cash' ? 'cash' : 'card_pos',
+          provider: input.method === "cash" ? "cash" : "card_pos",
           settledAt: new Date(),
           recordedBy: actorUserId ?? null,
         })
         .returning();
 
-      // Step H: Gapless Invoice
-      const docType = gym.vatRegistered ? 'tax_invoice' : 'receipt';
-      const series = gym.vatRegistered ? 'INV' : 'REC';
+      // Step H: Gapless Invoice (SBX for unverified sandbox)
+      const isSandbox = gym.status === "pending_verification";
+      const docType = isSandbox
+        ? "receipt"
+        : gym.vatRegistered
+          ? "tax_invoice"
+          : "receipt";
+      const series = isSandbox ? "SBX" : gym.vatRegistered ? "INV" : "REC";
 
       const [counter] = await tx
         .insert(invoiceCounters)
@@ -796,24 +862,37 @@ export class SalesService {
         });
 
       const assignedNumber = Number(counter?.assignedNumber || 1);
-      const invoiceNumber = `${series}-${String(assignedNumber).padStart(6, '0')}`;
+      const year = new Date().getFullYear();
+      const invoiceNumber = isSandbox
+        ? `SBX-${year}-${String(assignedNumber).padStart(5, "0")}`
+        : `${series}-${String(assignedNumber).padStart(6, "0")}`;
 
       const invoiceLines = [
         {
           description: `Membership Renewal: ${plan.title} (${plan.durationValue} ${plan.durationUnit}s)`,
           totalMinor: basePriceMinor,
-          baseMinor: Number(calculateVatInclusive(BigInt(basePriceMinor), vatRateBps).baseMinor),
-          vatMinor: Number(calculateVatInclusive(BigInt(basePriceMinor), vatRateBps).vatMinor),
+          baseMinor: Number(
+            calculateVatInclusive(BigInt(basePriceMinor), vatRateBps).baseMinor,
+          ),
+          vatMinor: Number(
+            calculateVatInclusive(BigInt(basePriceMinor), vatRateBps).vatMinor,
+          ),
           vatRateBps,
         },
       ];
 
       if (discountAmountMinor > 0) {
         invoiceLines.push({
-          description: `Discount: ${input.discount?.reasonCode || 'Discretionary discount'}`,
+          description: `Discount: ${input.discount?.reasonCode || "Discretionary discount"}`,
           totalMinor: -discountAmountMinor,
-          baseMinor: -Number(calculateVatInclusive(BigInt(discountAmountMinor), vatRateBps).baseMinor),
-          vatMinor: -Number(calculateVatInclusive(BigInt(discountAmountMinor), vatRateBps).vatMinor),
+          baseMinor: -Number(
+            calculateVatInclusive(BigInt(discountAmountMinor), vatRateBps)
+              .baseMinor,
+          ),
+          vatMinor: -Number(
+            calculateVatInclusive(BigInt(discountAmountMinor), vatRateBps)
+              .vatMinor,
+          ),
           vatRateBps,
         });
       }
@@ -823,7 +902,7 @@ export class SalesService {
         .values({
           gymId,
           paymentId: payment.id,
-          docType,
+          docType: docType as any,
           series,
           number: assignedNumber,
           invoiceNumber,
@@ -834,9 +913,10 @@ export class SalesService {
             tradeName: gym.tradeName,
             trnNumber: gym.trnNumber ?? null,
             tradeLicenseNumber: gym.tradeLicenseNumber,
+            isSandbox,
           },
           buyer: {
-            fullName: memberData?.user.fullName || 'Member',
+            fullName: memberData?.user.fullName || "Member",
             phone: memberData?.user.phone || null,
             email: memberData?.user.email || null,
             memberNumber: memberData?.memberNumber || null,
@@ -848,17 +928,18 @@ export class SalesService {
             vatMinor: Number(vatBreakdown.vatMinor),
             vatRateBps,
             currency,
+            isSandbox,
+            watermark: isSandbox
+              ? "SANDBOX DEMO - NOT A TAX INVOICE"
+              : undefined,
           },
         })
         .returning();
 
       // Step I: Update Membership Term
-      const nextStatus = (memRow.status === 'expired' ? 'active' : memRow.status) as
-        | 'pending_payment'
-        | 'active'
-        | 'frozen'
-        | 'expired'
-        | 'cancelled';
+      const nextStatus = (
+        memRow.status === "expired" ? "active" : memRow.status
+      ) as "pending_payment" | "active" | "frozen" | "expired" | "cancelled";
       const [updatedMembership] = await tx
         .update(memberships)
         .set({
@@ -875,7 +956,7 @@ export class SalesService {
       await tx.insert(membershipAdjustments).values({
         gymId,
         membershipId: memRow.id,
-        kind: 'renewal',
+        kind: "renewal",
         previousEndDate: currentEndDate,
         newEndDate,
         paymentId: payment.id,
@@ -884,7 +965,7 @@ export class SalesService {
       });
 
       // Step K: Shift Cash Increment
-      if (input.method === 'cash' && shiftId) {
+      if (input.method === "cash" && shiftId) {
         await tx
           .update(shifts)
           .set({
@@ -899,8 +980,8 @@ export class SalesService {
           gymId,
           actorUserId: actorUserId ?? null,
           actorRole,
-          action: 'sale.renewal',
-          entityType: 'membership',
+          action: "sale.renewal",
+          entityType: "membership",
           entityId: memRow.id,
           payload: {
             planId: plan.id,

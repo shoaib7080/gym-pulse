@@ -16,6 +16,7 @@ import { CurrentTenant, type TenantContext } from '../common/decorators/current-
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { MembersService } from './members.service';
 
+import { AllowInactiveGym } from '../common/decorators/allow-inactive-gym.decorator';
 import { ActiveGymGuard } from '../common/guards/active-gym.guard';
 
 @Controller('members')
@@ -42,6 +43,7 @@ export class MembersController {
    * Accessible by Owner, Manager, and Front Desk
    */
   @Get()
+  @AllowInactiveGym()
   @Roles('owner', 'manager', 'front_desk')
   async getMembers(
     @CurrentTenant() tenant: TenantContext,
@@ -64,6 +66,7 @@ export class MembersController {
    * Get member profile details by ID
    */
   @Get(':id')
+  @AllowInactiveGym()
   @Roles('owner', 'manager', 'front_desk')
   async getMemberById(
     @CurrentTenant() tenant: TenantContext,

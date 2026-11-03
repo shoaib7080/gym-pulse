@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect, useCallback } from "react";
 import {
   Building2,
   ChevronDown,
@@ -23,18 +23,70 @@ import { useAuth } from "../../context/AuthContext";
 interface HeaderProps {
   onSearchClick?: () => void;
   onRegisterGymClick?: () => void;
+  onNavSelect?: (nav: string) => void;
 }
 
-export function Header({ onSearchClick, onRegisterGymClick }: HeaderProps) {
-  const { user, userGyms, activeGym, activeGymId, userRole, branchScope, setActiveGymId, resubmitGym, signOut } = useAuth();
+interface RealBranch {
+  id: string;
+  name: string;
+  isActive?: boolean;
+  isMain?: boolean;
+  address?: {
+    street?: string;
+    city?: string;
+    emirate?: string;
+    country?: string;
+    postalCode?: string;
+  };
+}
 
-  const [selectedBranch, setSelectedBranch] = useState("Downtown Flagship");
+export function Header({ onSearchClick, onRegisterGymClick, onNavSelect }: HeaderProps) {
+  const { user, userGyms, activeGym, activeGymId, userRole, branchScope, setActiveGymId, resubmitGym, signOut, apiFetch } = useAuth();
+
+  const [realBranches, setRealBranches] = useState<RealBranch[]>([]);
+  const [selectedBranchId, setSelectedBranchId] = useState<string | null>(null);
+  const [selectedBranchName, setSelectedBranchName] = useState<string>("");
   const [isBranchDropdownOpen, setIsBranchDropdownOpen] = useState(false);
   const [isThemeMenuOpen, setIsThemeMenuOpen] = useState(false);
   const [isProfileMenuOpen, setIsProfileMenuOpen] = useState(false);
   const [activeThemeId, setActiveThemeId] = useState("kinetic-obsidian");
   const [isResubmitting, setIsResubmitting] = useState(false);
   const [resubmitStatus, setResubmitStatus] = useState<string | null>(null);
+
+  // Fetch real branches from DB whenever activeGymId changes
+  const loadHeaderBranches = useCallback(async () => {
+    if (!activeGymId) {
+      setRealBranches([]);
+      return;
+    }
+
+    try {
+      const res = await apiFetch('/v1/branches');
+      if (res.ok) {
+        const data = await res.json();
+        const branchList: RealBranch[] = Array.isArray(data) ? data : [];
+        setRealBranches(branchList);
+
+        if (branchList.length > 0) {
+          // If no branch currently selected or selected branch not in list, pick the main or first branch
+          const match = branchList.find((b) => b.id === selectedBranchId);
+          if (!match) {
+            const defaultBranch = branchList.find((b) => b.isMain) || branchList[0];
+            setSelectedBranchId(defaultBranch.id);
+            setSelectedBranchName(defaultBranch.name);
+          } else {
+            setSelectedBranchName(match.name);
+          }
+        }
+      }
+    } catch (err) {
+      console.warn("Failed to fetch branches in Header:", err);
+    }
+  }, [apiFetch, activeGymId, selectedBranchId]);
+
+  useEffect(() => {
+    loadHeaderBranches();
+  }, [loadHeaderBranches]);
 
   const isExplorerMode = !userGyms || userGyms.length === 0;
   const isPendingVerification = activeGym?.status === "pending_verification";
@@ -101,33 +153,14 @@ export function Header({ onSearchClick, onRegisterGymClick }: HeaderProps) {
     ? activeGym.yourRole.charAt(0).toUpperCase() + activeGym.yourRole.slice(1)
     : "Administrator";
 
+  const firstRegisteredGymName = userGyms && userGyms.length > 0 ? (userGyms[0].gym?.tradeName || userGyms[0].gym?.legalName) : null;
+
   const facilityName = isExplorerMode
     ? "Demo Facility"
-    : activeGym?.tradeName || "Downtown Flagship";
+    : activeGym?.tradeName || firstRegisteredGymName || "Fitness Facility";
 
   return (
     <div className="flex flex-col shrink-0 z-30 font-sans">
-      {/* Demo / Sample Data Notice */}
-      {isExplorerMode && (
-        <div className="w-full bg-[#1A202C] border-b border-white/[0.08] px-4 py-2 flex items-center justify-between text-xs text-slate-300 gap-4">
-          <div className="flex items-center gap-2 overflow-hidden">
-            <span className="px-2 py-0.5 rounded bg-primary/20 text-primary border border-primary/30 text-[10px] font-bold uppercase tracking-wider shrink-0">
-              Demo Mode
-            </span>
-            <span className="truncate text-slate-300">
-              You are viewing sample data. Register your facility to start live operations.
-            </span>
-          </div>
-          <button
-            type="button"
-            onClick={onRegisterGymClick}
-            className="shrink-0 flex items-center gap-1.5 px-3 py-1 rounded-md bg-primary hover:bg-primary-hover active:bg-primary-active text-on-primary text-xs font-bold transition-all shadow-sm cursor-pointer"
-          >
-            <span>Register Facility</span>
-            <ArrowRight className="w-3.5 h-3.5" />
-          </button>
-        </div>
-      )}
 
       {/* Verification In Review Notice */}
       {!isExplorerMode && isPendingVerification && (
@@ -201,9 +234,11 @@ export function Header({ onSearchClick, onRegisterGymClick }: HeaderProps) {
                 <span className="text-[10px] text-slate-400 font-medium leading-tight truncate">
                   {isExplorerMode
                     ? "Sample Data"
-                    : activeGym?.branches?.length
-                    ? `${activeGym.branches.length} Branches • Active`
-                    : `${selectedBranch}`}
+                    : selectedBranchName
+                    ? `${selectedBranchName}${realBranches.length > 1 ? ` • ${realBranches.length} Branches` : ''}`
+                    : realBranches.length > 0
+                    ? `${realBranches.length} Branches • Active`
+                    : "Primary Hub"}
                 </span>
               </div>
               <ChevronDown
@@ -255,43 +290,54 @@ export function Header({ onSearchClick, onRegisterGymClick }: HeaderProps) {
                   Select Facility Branch
                 </div>
                 <div className="flex flex-col gap-1 max-h-56 overflow-y-auto">
-                  {activeGym?.branches && activeGym.branches.length > 0 ? (
-                    activeGym.branches.map((b) => (
+                  {realBranches.length > 0 ? (
+                    realBranches.map((b) => (
                       <button
                         key={b.id}
                         type="button"
                         onClick={() => {
-                          setSelectedBranch(b.name);
+                          setSelectedBranchId(b.id);
+                          setSelectedBranchName(b.name);
                           setIsBranchDropdownOpen(false);
                         }}
                         className={`w-full flex items-center justify-between p-2 rounded-lg text-left text-xs transition-colors ${
-                          selectedBranch === b.name
+                          selectedBranchId === b.id || selectedBranchName === b.name
                             ? "bg-slate-800 text-white font-semibold"
                             : "hover:bg-surface-bright text-on-surface"
                         }`}
                       >
                         <div>
                           <div className="font-semibold">{b.name}</div>
-                          <div className="text-[10px] text-slate-400">{b.code} • {b.city || "Dubai"}</div>
+                          <div className="text-[10px] text-slate-400">
+                            {b.address?.city || b.address?.emirate || "Dubai"}
+                          </div>
                         </div>
-                        {b.isMain && (
-                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-800 text-slate-300 font-bold border border-slate-700">
+                        {b.isMain ? (
+                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-primary/20 text-primary font-bold">
                             Main
                           </span>
-                        )}
+                        ) : b.isActive === false ? (
+                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 font-medium">
+                            Inactive
+                          </span>
+                        ) : null}
                       </button>
                     ))
+                  ) : !isExplorerMode ? (
+                    <div className="p-3 text-center text-xs text-slate-400">
+                      No branches found for this gym.
+                    </div>
                   ) : (
                     defaultBranches.map((b) => (
                       <button
                         key={b.name}
                         type="button"
                         onClick={() => {
-                          setSelectedBranch(b.name);
+                          setSelectedBranchName(b.name);
                           setIsBranchDropdownOpen(false);
                         }}
                         className={`w-full flex items-center justify-between p-2 rounded-lg text-left text-xs transition-colors ${
-                          selectedBranch === b.name
+                          selectedBranchName === b.name
                             ? "bg-slate-800 text-white font-semibold"
                             : "hover:bg-surface-bright text-on-surface"
                         }`}
@@ -307,6 +353,23 @@ export function Header({ onSearchClick, onRegisterGymClick }: HeaderProps) {
                     ))
                   )}
                 </div>
+
+                {/* Manage Branches quick link */}
+                {onNavSelect && (
+                  <div className="mt-2 pt-2 border-t border-outline-variant/30">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsBranchDropdownOpen(false);
+                        onNavSelect("branches");
+                      }}
+                      className="w-full flex items-center justify-between p-1.5 rounded-lg text-xs font-semibold text-slate-300 hover:text-white hover:bg-surface-container transition-colors cursor-pointer"
+                    >
+                      <span>Manage All Branches</span>
+                      <span className="text-primary font-bold">→</span>
+                    </button>
+                  </div>
+                )}
               </div>
             )}
           </div>

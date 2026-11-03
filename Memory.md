@@ -7,15 +7,18 @@
 ## 📌 1. Project Overview & Core Value Proposition
 
 - **Product:** GymPulse — Production-grade Multi-Tenant SaaS for independent gyms, boutique clubs, and multi-branch chains across the UAE, GCC, and India.
-- **Specification:** GymPulse Platform Specification (49 pages, October 2026).
+- **Specification (Live & Authoritative):**
+  - **Doc 1 (Frontend & Architecture):** [GymPulse Technical Architecture & Frontend Implementation Guide](https://docs.google.com/document/d/1XDj0qGwLjidt43GFcEy64tqUru3eCSCNvAfhSHAgOMU/edit?usp=sharing) (Google Doc ID: `1XDj0qGwLjidt43GFcEy64tqUru3eCSCNvAfhSHAgOMU`).
+  - **Doc 2 (Platform & Core Domain):** [GymPulse Platform Specification](https://docs.google.com/document/d/1Il_cukiVKwiWJzrvCnHtkSybKNB7ccVHezOsjV9Pw_c/edit?usp=sharing) (Google Doc ID: `1Il_cukiVKwiWJzrvCnHtkSybKNB7ccVHezOsjV9Pw_c`, Updated October/November 2026).
+  - *Note:* These two live Google Docs are the sole authoritative project specifications, superseding all prior PDF drafts.
 - **Core Pillars:**
-  - **Strict Multi-Tenant Scoping:** Zero cross-gym data leakage enforced at the database query layer (`tenant-scope.helper.ts`).
+  - **Strict Multi-Tenant Scoping:** Zero cross-gym data leakage enforced at the database query layer (`tenant-scope.helper.ts`) with mandatory `X-Gym-ID` and `X-Branch-ID` request headers.
   - **Cryptographic Audit Integrity:** Tamper-evident append-only audit trail protected by SHA-256 hash chains (`audit_logs` + `AuditService` with deterministic `canonicalStringify`).
   - **Automated GCC & India Tax Compliance:** UAE VAT (5% in integer fils, round-half-up, 15-digit TRN) and Indian GST compatibility.
   - **Dynamic Multi-Provider Payments:** Direct merchant settlement via dynamic configuration objects supporting **Tap Payments** for GCC (AED, SAR) and **Razorpay** for India (INR), with Stripe deferred.
   - **Policy-Controlled Membership Engine:** Inclusive business date math, tamper-evident adjustment ledgers, and automated freeze/expiry extensions.
-  - **Shift-Based Cashier Reconciliation:** Blind drawer closeouts with automated minor unit variance calculations.
-  - **Gym License Verification & Active Gym Guard:** Unverified gyms (`pending_verification`) are blocked from creating new branches, registering members, creating plans, selling memberships, and processing sales via `ActiveGymGuard`. Profile editing and document uploading remain permitted while pending. Platform Administration manages the review queue, approval, and rejection with mandatory reason and email notifications.
+  - **Shift-Based Cashier Reconciliation & Movements:** Blind drawer closeouts with automated minor unit variance calculations and a dedicated cash movements ledger (`safe_drop`, `pay_out`, `float_adjustment`).
+  - **Harmonized 4-Stage Onboarding & Sandbox Definition:** Stage 1 (Explorer Preview Mode, Pattern 2 zero-latency mock interceptors), Stage 2 (Pending Verification Sandbox, Brevo SMS OTP, SBX demo invoices with watermark, 2 branches / 10 members cap), Stage 3 (Verified Free Starter State, 2 branches / 10 members starter cap with capacity meter), Stage 4 (Subscribed & Unlocked SaaS tier).
 
 ---
 
@@ -166,10 +169,10 @@ Every person in the system begins as a generic identity in `auth_user`. Privileg
        │ id (uuid)                   │               │ id (uuid)                   │
        │ user_id (FK -> auth_user)   │               │ user_id (FK -> users)       │
        │ role (3 roles):             │               │ gym_id (FK -> gyms)         │
-       │   - superadmin              │               │ role (3 roles):             │
+       │   - superadmin              │               │ role (2 tenant roles):      │
        │   - support                 │               │   - owner                   │
-       │   - auditor                 │               │   - manager                 │
-       │ is_active (boolean)         │               │   - front_desk              │
+       │   - auditor                 │               │   - staff                   │
+       │ is_active (boolean)         │               │ (PIN step-up for high-risk) │
        │ Scope: Global (No gym_id)   │               │ branch_scope: all | selected│
        │ Guard: PlatformAdminGuard   │               │ Guard: TenantGuard          │
        │ Routes: /v1/platform/*      │               │ Routes: /v1/gyms/*, etc.    │
@@ -185,13 +188,12 @@ Every person in the system begins as a generic identity in `auth_user`. Privileg
 ### Role Breakdown
 
 - **Platform Admin Roles (`platform_admins`):**
-  - **`superadmin`:** Full platform god-mode (verify/approve gym licenses, activate/suspend gyms, promote/revoke other platform admins).
-  - **`support`:** Read-only gym and user inspection for technical support and troubleshooting.
+  - **`superadmin`:** Full platform god-mode (verify/approve gym licenses, activate/suspend gyms, promote/revoke other platform admins). Accessible exclusively via WebAuthn hardware passkeys (with email/password + TOTP fallback behind IP allowlist).
+  - **`support`:** Read-only gym and user inspection for technical support and troubleshooting (member PII masked by default).
   - **`auditor`:** Compliance and financial oversight; reads tamper-evident hash chains and platform metrics.
-- **Gym Staff Roles (`staff_assignments`):**
-  - **`owner`:** Full tenant ownership (provisions gym, assigns managers/front desk, configures payment providers, closes gym).
-  - **`manager`:** Operational management (creates branches, configures plans, overrides variance thresholds, reviews freezes).
-  - **`front_desk`:** Day-to-day reception (opens/closes cashier shifts, handles member check-ins, processes desk sales).
+- **Gym Tenant Roles (`staff_assignments` - Simplified 2-Role Model per Doc 1 §10.3 & Doc 2 §4.1):**
+  - **`owner` (Gym Owner):** Full unrestricted tenant access (provisions gym, invites/manages staff accounts, configures payment providers, manages plans & freeze policies, views financial analytics & MRR, and manages subscription tier).
+  - **`staff` (Staff):** Branch-scoped operational access (Front Desk check-in search & scanning, cashier shifts, sales, member registration). Separate 'manager' and 'front_desk' roles are collapsed into `staff`. High-risk operational actions (early freeze lift, blind cash drawer variance approval, shift cash movements) mandate **Manager/Admin PIN step-up verification** (4-8 digit scrypt-hashed PIN with 5-attempt/15-minute lockout).
 
 ---
 
@@ -908,14 +910,80 @@ NODE_ENV="development"
 - **Inactive Gym KYC Verification Rails:** Displayed prominent verification banners in `Header` and `OperationsView` when a gym is `pending_verification`, `rejected`, or `suspended`. Integrated client resubmission flow via `POST /v1/gyms/:id/resubmit`.
 - **Branch Scoping UI Alignment:** Exposing `branchScope` in `AuthContext` allows the facility header and operations dropdowns to respect assigned branches for staff members with `selected` scope.
 
-### ADR D-30: Enterprise Production Hardening & Architectural Sign-Off
-- **Master Hardening Verification Suite:** Built `apps/api/test-master-hardening-suite.cjs` unifying all 6 architectural security domains under an automated verification harness. Validates 100% test passing across script safety, cryptographic audit chaining, distributed automation, atomic financial integrity, auth perimeter, and client resilience.
-- **Fail-Closed Security Architecture:** Every SQL mutation across the application runs within explicit transactions, fail-closed audit log generation, and strict tenant isolation via `scopeToGym`.
-- **Zero-Trust Input & Server-Driven Invariants:** Base prices, currencies, and term extensions are dictated exclusively by backend database records and deterministic calendar math (`addMonthsClamped`), with zero trust placed in client-submitted prices or dates.
-- **Production Readiness Sign-Off:** GymPulse backend and web applications have achieved full compliance with the 15 steps of the GymPulse Hardening Guide and PRD enterprise standards.
+### ADR D-31: Zero-Latency Explorer Preview Mode & Global CTA Scaffolding (Pattern 2)
+- **API Client Interceptor Architecture:** Unonboarded users registering with only credentials (`activeGymId === null`) land instantly in Explorer Preview Mode without database overhead or network loading delays.
+- **GET Request Mock Routing:** `apiFetch` in `AuthContext.tsx` delegates to `interceptExplorerRequest` in `apps/web/src/lib/api-client.ts`, resolving GET requests against pre-bundled UAE-localized mock fixtures in `apps/web/src/mocks/fixtures/` (`mockMetrics.ts`, `mockMembers.ts`, `mockShifts.ts`, `mockFreezes.ts`, `mockInvoices.ts`).
+- **Mutating Request Interception:** Mutating HTTP requests (`POST`, `PUT`, `PATCH`, `DELETE`) are short-circuited with HTTP 403 `EXPLORER_MODE_READ_ONLY` and dispatch custom event `gympulse:open-register-modal`.
+- **Zero Component Pollution:** Views, Bento cards, and data tables remain 100% agnostic to simulated vs live data (no `if (isDemo)` or `if (isExplorer)` conditionals in view files).
+- **Persistent CTA Scaffolding:** `ExplorerBanner.tsx` mounted directly under the header whenever `!activeGymId`. Global event listener in `App.tsx` activates `RegisterGymModal.tsx` slide-over onboarding drawer to transition users into Stage 2 (`pending_verification`).
 
+### ADR D-32: SaaS Subscription Tier Branch Cap Enforcement & Upgrade CTA
+- **Backend Limit Assertion:** `POST /v1/branches` enforces tenant branch limits via `SubscriptionsService.checkBranchLimit(gymId)`, returning HTTP 403 with `code: 'BRANCH_LIMIT_EXCEEDED'`, `currentCount`, and `maxAllowed`.
+- **Frontend Upgrade Interception:** In `BranchManagementView.tsx`, `handleCreateBranch` detects `BRANCH_LIMIT_EXCEEDED`, dismisses the creation modal, and populates `branchLimitInfo`.
+- **Dismissible Upgrade Banner:** Displays a high-contrast amber alert banner showing current usage (`X/Y branches used`), explanatory copy, and a `Zap` icon "Upgrade Membership" CTA directing the owner to subscription settings.
 
+---
 
+## 📐 9. Updated Technical Architecture & UI/UX Specification Guardrails
 
+*Authoritative alignment with live Google Docs: [GymPulse Technical Architecture & Frontend Implementation Guide](https://docs.google.com/document/d/1XDj0qGwLjidt43GFcEy64tqUru3eCSCNvAfhSHAgOMU/edit?usp=sharing) and [GymPulse Platform Specification](https://docs.google.com/document/d/1Il_cukiVKwiWJzrvCnHtkSybKNB7ccVHezOsjV9Pw_c/edit?usp=sharing) (Updated October/November 2026):*
 
+### 9.1 Core Architectural & Frontend Specifications
+1. **Frontend Stack (Strict Vite React SPA):**
+   - Pure Vite Single Page Application using React 19, TypeScript, TanStack Query, Tailwind CSS, and shadcn/ui.
+   - All Next.js references, App Router mechanics, and client-side `@react-pdf/renderer` are completely removed. Invoices and credit notes are generated server-side and fetched via short-lived presigned S3 download URLs (`GET /v1/invoices/:id/pdf`).
+2. **Context Headers on Every Request:**
+   - Every API request must pass both `X-Gym-ID` and `X-Branch-ID` headers, validated against the database.
+   - Web clients use database-backed `httpOnly` secure cookie sessions (`credentials: 'include'`). Bearer tokens are reserved strictly for the React Native / Expo mobile app.
+3. **Role Model Simplification (Strict 2-Role Model):**
+   - Tenant permissions are strictly two roles: **`Gym Owner`** (unrestricted tenant access, financial configuration, staff accounts, subscription settings) and **`Staff`** (branch-scoped operations: front desk check-in, cashier shifts, sales, member registration).
+   - High-risk staff operations (early freeze lift, blind cash drawer variance approval, shift cash movements) mandate **Manager/Admin PIN step-up verification** (4–8 digit scrypt-hashed PIN with 5-attempt/15-minute lockout).
+4. **Harmonized 4-Stage Onboarding & Sandbox Definition:**
+   - **Stage 1 (Explorer Preview Mode):** `user.gym_id === null`. Pre-bundled UAE mock fixtures (`src/mocks/fixtures/`) served via Pattern 2 API client mock interceptor with zero network delay. Page components remain 100% agnostic. Mutating requests reject with `403 EXPLORER_MODE_READ_ONLY` and open `RegisterGymModal`. Persistent `ExplorerBanner` displayed below the header.
+   - **Stage 2 (Pending Verification Sandbox):** Submitting onboarding verifies owner mobile via **one-time Brevo SMS OTP** (60s cooldown, max 3/day) and sets `gym.status === 'pending_verification'`. Sandbox limits enforce max 2 branches and max 10 active members. Front-desk receipts generate using the demo **SBX series** (e.g., `SBX-2026-00001`) with a prominent diagonal semi-transparent watermark: `"SANDBOX DEMO - NOT A TAX INVOICE"`. Real tax invoice counters do not advance. Live payment gateways, official FTA tax invoices, and automated WhatsApp broadcasts remain locked. Top header displays: `"Verification Pending — Under Admin Review"`.
+   - **Stage 3 (Verified Free Starter State):** Platform Super Admin verifies trade license and TRN, transitioning `gym.status === 'active'`. Starter cap of 2 branches and 10 members remains with capacity progress meters and subscription prompts.
+   - **Stage 4 (Subscribed & Unlocked):** Active SaaS tier recorded in `gym_subscriptions` unlocks operational capacity (Growth: 3 branches / 100 members; Pro: 5 branches / 200 members; Enterprise: Custom limits).
+5. **Unified Subscription Limit Error Handling & Over-Limit Behavior:**
+   - All capacity breaches return standard RFC 7807 error `SUBSCRIPTION_LIMIT_REACHED` with payload `{ limit_key, current_usage, max_allowed, reason: 'unverified_sandbox' | 'unsubscribed_starter' | 'tier_cap_exceeded', upgrade_required: true }`.
+   - Context-aware UI responses: `unverified_sandbox` prompts trade license verification review; `unsubscribed_starter` and `tier_cap_exceeded` open the tier upgrade drawer at `/settings/subscription`.
+   - **Downgrade Over-Limit Behavior:** When capacity is exceeded after a plan downgrade, the exceeded progress meter highlights in amber/red with an over-limit badge. Creation CTAs (`+ Add Member`, `+ Add Branch`) are disabled with tooltip *"Plan capacity exceeded. Upgrade tier to add more."* Existing members retain full access and front-desk check-ins continue without disruption.
+6. **Minor Member Handling & Guardian Requirements:**
+   - The system automatically computes age from Date of Birth. If member is under 18 years old, a mandatory "Guardian Information" section is revealed requiring Guardian Full Name, Relationship, Emirates ID / Passport Number, Phone Number, and an attached signed liability waiver / health declaration file before membership activation.
+7. **Cash Movements & Drawer Formula:**
+   - Active shift drawer supports "+ Cash Movement" modal for `safe_drop`, `pay_out`, and `float_adjustment` with mandatory reason note. Pay-outs and float adjustments require Manager PIN step-up.
+   - Reconciled drawer formula: `Expected Cash = Opening Float + Cash In (Sales) - Cash Refunds - Safe Drops - Pay-Outs + Float Adjustments`.
+8. **Top Header Operational Controls:**
+   - Dynamic Active Shift Status Indicator: Live status badge reflecting open cashier shift (`GET /v1/shifts/current`) before recording cash/POS sales.
+   - Branch Selector dropdown with tenant scoping.
+   - Wide non-truncated `Ctrl+K` command palette search input (minimum 280px).
+   - Bilingual Language Toggle (English LTR / Arabic RTL) with full `dir="rtl"` support.
+   - Theme Switcher supporting Dark, Light, and System OS preference modes.
+9. **Integer Minor Units (Fils) & AED Currency:**
+   - Strict enforcement of integer fils (`_minor` fields, e.g. `total_minor`, `vat_minor`) and AED currency across all interfaces and data contracts. Floating-point currency values are strictly prohibited.
 
+### 9.2 UI/UX Polish & Visual Restraint Rules
+1. **Accent Discipline:** Solid `#D4FF00` volt-lime fills reserved strictly for the single primary CTA per viewport (e.g., `+ Quick Check-In`, `Register Your Gym`).
+2. **Prohibit One-Sided Colored Borders:** Strictly forbid one-sided colored borders (such as left indicator bars or `border-l-4`) anywhere across UI components. Active/selected sidebar items and cards use an elevated slate surface fill (`#1E2430`), uniform all-around 1px border (`#2A3241`), white text, and an accent-colored icon (`#D4FF00`).
+3. **Eliminate Cyan Color Clashes:** Avoid mixing cyan/sky-blue text with volt-lime accents. Use muted slate-grey (`#94A3B8`) for secondary text and reserve colors strictly for semantic business statuses (Emerald Green `#10B981` = Active/Paid, Vivid Amber `#F59E0B` = Frozen/Pending, Crimson Red `#EF4444` = Expired/Canceled/Denied, Slate Blue `#3B82F6` = Grace Period).
+4. **Border-Radius Hierarchy:** Standardized 8px (`rounded-lg`) for inputs, buttons, and badges; 12px (`rounded-xl`) for outer Bento cards, panels, and modal dialogs. Pill inputs (`rounded-full`) prohibited.
+5. **Browser Autofill Dark Override:** CSS overrides for `-webkit-autofill` ensuring email and password fields maintain dark background (`#141820`) and white text.
+6. **Strip Database & Backend Jargon:** Developer strings ("100% RLS Backstop Active", "Facility Partition ID", "Members in DB", "UAE FTA & Peppol Verified") permanently purged from user-facing screens.
+
+---
+
+## 📋 10. Platform Completion Roadmap & Deliverables Matrix
+
+To achieve 100% platform completion per the authoritative specifications, the following tasks are organized across the stack:
+
+| Component / Area | Status | Deliverables Remaining |
+| :--- | :---: | :--- |
+| **Explorer Mode & Onboarding** | ✅ Delivered | Stage 1 Pattern 2 API client mock interceptor and `RegisterGymModal` CTA drawer complete. Stage 2 Brevo SMS OTP and SBX watermark invoice flow ready for backend verification wiring. |
+| **Branch Limit Enforcement** | ✅ Delivered | Backend `SubscriptionsService.checkBranchLimit` enforced; frontend `BRANCH_LIMIT_EXCEEDED` alert banner with `Zap` upgrade CTA live. |
+| **Members Directory (`/members`)** | ✅ Delivered | Starter tier capacity meter chip (`X / 10 Free Starter`), minor DOB check (< 18) with mandatory Guardian Information intake & signed waiver confirmation, 3-tab slide-over drawer (Profile & Plan, Attendance Ledger, Invoices & Receipts). |
+| **Staff Management (`/settings/staff`)** | ✅ Delivered | Backend status toggle (`PATCH /v1/gyms/staff/:id/status`) with instant session termination, password reset (`POST /v1/gyms/staff/:id/reset-password`), Brevo invitation emails, multi-branch scoping, and dedicated `StaffManagementView` with roster table, search/filters, invite modal, and Owner gate. |
+| **Top Header Controls** | 🔄 In Progress | Wire dynamic shift status to `GET /v1/shifts/current` ("Shift Open" / "No Active Shift"); add English/Arabic language toggle; add `X-Branch-ID` header injection in client requests. |
+| **Subscription & Billing (`/settings/subscription`)** | ✅ Delivered | Sandbox branch limit check (2 branches for `pending_verification`, RFC 7807 `SUBSCRIPTION_LIMIT_REACHED`), auto-provisioning SaaS tier upgrade endpoint, mock interceptors, `SubscriptionBillingView` with active plan bento, capacity consumption progress bars (Members X/Y, Branches X/Y), graceful downgrade over-limit alert protection, 3-tier upgrade grid (Growth, Pro with Most Popular badge, Enterprise), upgrade checkout modal with 5% UAE VAT breakdown, and platform tax invoices ledger (`GP-INV-XXXXXX`) with receipt downloads. |
+| **Overview Dashboard (`/dashboard`)** | ✅ Delivered | Role-conditional Bento Dashboard: Executive Owner View (Recognised Monthly Revenue RMR with prepaid amortization, Retention % & Churn %, Multi-Branch comparative performance chart, and Recent Financial Activity Ledger) vs. Staff Operations View (100% zero financial telemetry, 90-min rolling decay live active occupancy gauge, real-time check-in stream, hourly peak heatmap, today's class schedule, and duty roster). |
+| **Invoices & VAT Ledger (`/invoices`)** | ✅ Delivered | Dedicated `InvoicesView` mounted at `#/invoices`; gapless sequential ledger (`INV-YYYY-XXXXX`, `CN-YYYY-XXXXX`, `SBX-YYYY-XXXXX`); unverified sandbox `SBX` series with independent counter and prominent diagonal `"SANDBOX DEMO - NOT A TAX INVOICE"` watermark; multi-field filter suite (search, series, payment status, payment method, date range presets); top 4-card metric telemetry (Gross, UAE 5% VAT in fils, Net Base, Ledger Count); UTF-8 BOM bulk CSV export (`GymPulse-Tax-Invoices-Ledger-YYYY-MM-DD.csv`); backend `InvoicesController` (`GET /v1/invoices`, `GET /v1/invoices/:id`, `GET /v1/invoices/:id/pdf`) returning short-lived presigned S3 download URLs; print-formatted FTA receipt modal. |
+| **Member Mobile Application (`apps/mobile`)** | ⏳ Backlog (Phase 1/2) | React Native / Expo app featuring Multi-Gym Tenancy Picker, dynamic QR member card, "Log Visit" geofenced tap check-in, freeze quota management, and plan renewals. |
+| **Shifts & Cash Management (`/shifts`)** | ⏳ Pending (Final Step) | "+ Cash Movement" modal (`safe_drop`, `pay_out`, `float_adjustment`) with Manager PIN step-up; Movements Ledger table; standard drawer expected cash calculation. Kept strictly as final step per user direction. |

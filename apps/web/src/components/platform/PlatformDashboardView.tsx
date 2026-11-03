@@ -17,15 +17,25 @@ import {
 } from "../ui/icons";
 
 interface OverviewMetrics {
-  gyms: {
-    total: number;
-    active: number;
-    pending: number;
-    suspended: number;
+  gyms?: {
+    totalGyms?: number;
+    activeGyms?: number;
+    pendingGyms?: number;
+    suspendedGyms?: number;
+    closedGyms?: number;
+    total?: number;
+    active?: number;
+    pending?: number;
   };
-  branches: number;
-  members: number;
-  admins: number;
+  branches?: {
+    totalBranches?: number;
+  } | number;
+  members?: {
+    totalMembers?: number;
+  } | number;
+  admins?: {
+    totalAdmins?: number;
+  } | number;
 }
 
 interface PendingGym {
@@ -200,65 +210,99 @@ export function PlatformDashboardView() {
         )}
 
         {/* SaaS Core Telemetry Cards */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-          <div className="p-4 rounded-xl bg-surface-container-low border border-outline-variant/30 shadow-sm">
-            <div className="flex items-center justify-between text-outline text-xs mb-2">
-              <span>Total Provisioned Gyms</span>
-              <Building2 className="w-4 h-4 text-secondary" />
-            </div>
-            <div className="text-2xl font-black text-white font-mono">
-              {metrics?.gyms.total ?? 1}
-            </div>
-            <div className="text-[11px] text-on-surface-variant mt-1 flex items-center gap-2">
-              <span className="text-primary font-semibold">
-                {metrics?.gyms.active ?? 1} Active
-              </span>
-              <span>•</span>
-              <span className="text-warning font-semibold">
-                {metrics?.gyms.pending ?? 0} Pending
-              </span>
-            </div>
-          </div>
+        {(() => {
+          const totalGyms = Number(
+            (metrics?.gyms as any)?.totalGyms ??
+            (metrics?.gyms as any)?.total ??
+            0
+          );
+          const activeGyms = Number(
+            (metrics?.gyms as any)?.activeGyms ??
+            (metrics?.gyms as any)?.active ??
+            0
+          );
+          const pendingGyms = Number(
+            (metrics?.gyms as any)?.pendingGyms ??
+            (metrics?.gyms as any)?.pending ??
+            0
+          );
+          const totalBranches = Number(
+            typeof metrics?.branches === "object" && metrics.branches !== null
+              ? (metrics.branches as any).totalBranches ?? 0
+              : typeof metrics?.branches === "number"
+              ? metrics.branches
+              : 0
+          );
+          const totalMembers = Number(
+            typeof metrics?.members === "object" && metrics.members !== null
+              ? (metrics.members as any).totalMembers ?? 0
+              : typeof metrics?.members === "number"
+              ? metrics.members
+              : 0
+          );
 
-          <div className="p-4 rounded-xl bg-surface-container-low border border-outline-variant/30 shadow-sm">
-            <div className="flex items-center justify-between text-outline text-xs mb-2">
-              <span>KYC Review Backlog</span>
-              <ShieldAlert className="w-4 h-4 text-warning" />
-            </div>
-            <div className="text-2xl font-black text-warning font-mono">
-              {reviewQueue.length}
-            </div>
-            <div className="text-[11px] text-on-surface-variant mt-1">
-              Applications requiring trade license audit
-            </div>
-          </div>
+          return (
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+              <div className="p-4 rounded-xl bg-surface-container-low border border-outline-variant/30 shadow-sm">
+                <div className="flex items-center justify-between text-outline text-xs mb-2">
+                  <span>Total Provisioned Gyms</span>
+                  <Building2 className="w-4 h-4 text-secondary" />
+                </div>
+                <div className="text-2xl font-black text-white font-mono">
+                  {totalGyms}
+                </div>
+                <div className="text-[11px] text-on-surface-variant mt-1 flex items-center gap-2">
+                  <span className="text-primary font-semibold">
+                    {activeGyms} Active
+                  </span>
+                  <span>•</span>
+                  <span className="text-warning font-semibold">
+                    {pendingGyms} Pending
+                  </span>
+                </div>
+              </div>
 
-          <div className="p-4 rounded-xl bg-surface-container-low border border-outline-variant/30 shadow-sm">
-            <div className="flex items-center justify-between text-outline text-xs mb-2">
-              <span>Global Branch Nodes</span>
-              <Activity className="w-4 h-4 text-primary" />
-            </div>
-            <div className="text-2xl font-black text-white font-mono">
-              {metrics?.branches ?? 3}
-            </div>
-            <div className="text-[11px] text-primary mt-1 font-semibold">
-              100% Operational Telemetry
-            </div>
-          </div>
+              <div className="p-4 rounded-xl bg-surface-container-low border border-outline-variant/30 shadow-sm">
+                <div className="flex items-center justify-between text-outline text-xs mb-2">
+                  <span>KYC Review Backlog</span>
+                  <ShieldAlert className="w-4 h-4 text-warning" />
+                </div>
+                <div className="text-2xl font-black text-warning font-mono">
+                  {reviewQueue.length}
+                </div>
+                <div className="text-[11px] text-on-surface-variant mt-1">
+                  Applications requiring trade license audit
+                </div>
+              </div>
 
-          <div className="p-4 rounded-xl bg-surface-container-low border border-outline-variant/30 shadow-sm">
-            <div className="flex items-center justify-between text-outline text-xs mb-2">
-              <span>Registered Gym Members</span>
-              <Users className="w-4 h-4 text-secondary" />
+              <div className="p-4 rounded-xl bg-surface-container-low border border-outline-variant/30 shadow-sm">
+                <div className="flex items-center justify-between text-outline text-xs mb-2">
+                  <span>Global Branch Nodes</span>
+                  <Activity className="w-4 h-4 text-primary" />
+                </div>
+                <div className="text-2xl font-black text-white font-mono">
+                  {totalBranches}
+                </div>
+                <div className="text-[11px] text-primary mt-1 font-semibold">
+                  100% Operational Telemetry
+                </div>
+              </div>
+
+              <div className="p-4 rounded-xl bg-surface-container-low border border-outline-variant/30 shadow-sm">
+                <div className="flex items-center justify-between text-outline text-xs mb-2">
+                  <span>Registered Gym Members</span>
+                  <Users className="w-4 h-4 text-secondary" />
+                </div>
+                <div className="text-2xl font-black text-white font-mono">
+                  {totalMembers}
+                </div>
+                <div className="text-[11px] text-on-surface-variant mt-1 font-mono">
+                  Across all tenant databases
+                </div>
+              </div>
             </div>
-            <div className="text-2xl font-black text-white font-mono">
-              {metrics?.members ?? 1240}
-            </div>
-            <div className="text-[11px] text-on-surface-variant mt-1 font-mono">
-              Across all tenant databases
-            </div>
-          </div>
-        </div>
+          );
+        })()}
 
         {/* View Switcher Tabs */}
         <div className="flex items-center gap-2 border-b border-outline-variant/30 pb-2">
